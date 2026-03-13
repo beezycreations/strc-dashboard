@@ -6,8 +6,8 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 export function useSnapshot() {
   return useSWR("/api/data/snapshot", fetcher, {
-    refreshInterval: 60_000,
-    revalidateOnFocus: false,
+    refreshInterval: 30_000,
+    revalidateOnFocus: true,
   });
 }
 

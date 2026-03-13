@@ -49,7 +49,7 @@ export default function OverviewView() {
           value={fmtMultiple(s.mnav)}
           delta={`${s.mnav_30d_trend >= 0 ? "+" : ""}${s.mnav_30d_trend.toFixed(2)} 30d`}
           deltaType={s.mnav_30d_trend >= 0 ? "up" : "down"}
-          footer={<Badge variant={s.mnav_regime === "crisis" ? "red" : s.mnav_regime === "tactical" ? "amber" : "green"}>{s.mnav_regime}</Badge>}
+          footer={<Badge variant={s.mnav_regime === "discount" ? "green" : s.mnav_regime === "tactical" ? "amber" : "red"}>{s.mnav_regime}</Badge>}
         />
         <KpiCard
           label="Bitcoin Price"
