@@ -130,13 +130,23 @@ export default function VolumeATMTracker() {
       };
     });
 
-    // Step 2: Reconcile — for each confirmed 8-K range, override daily estimates
-    // so they sum to the confirmed total, allocated by volume weight.
+    // Step 2: Reconcile with confirmed 8-K data.
+    // All days on or before the most recent confirmed 8-K date are considered
+    // "covered by actuals" — once we have an 8-K, everything prior is reconciled.
+    // Within each confirmed range, the 8-K total is allocated by volume weight.
+    // Days before the earliest confirmed range but still within the confirmed
+    // cutoff retain their estimates but are marked confirmed (actuals absorbed).
+
+    // Find the latest confirmed 8-K date — everything on or before this is "actual"
+    const latestConfirmedDate = confirmedRanges.length > 0
+      ? confirmedRanges[confirmedRanges.length - 1].end
+      : null;
+
+    // First, allocate confirmed totals within each 8-K range by volume weight
     for (const range of confirmedRanges) {
       const daysInRange = rawDays.filter(
         (d) => d.date > range.start && d.date <= range.end
       );
-      // If the range start === end (single-day confirmation), include that day
       if (range.start === range.end) {
         const singleDay = rawDays.find((d) => d.date === range.end);
         if (singleDay && !daysInRange.includes(singleDay)) {
@@ -149,11 +159,22 @@ export default function VolumeATMTracker() {
       const totalVolume = daysInRange.reduce((s, d) => s + d.strc_volume, 0);
       if (totalVolume === 0) continue;
 
-      // Allocate confirmed proceeds proportionally by daily volume
       for (const day of daysInRange) {
         const weight = day.strc_volume / totalVolume;
         day.atm_proceeds = range.proceeds_usd * weight;
         day.atm_source = "confirmed";
+      }
+    }
+
+    // Then, mark all remaining days on or before the latest 8-K as confirmed.
+    // These are days before the first 8-K range or between ranges that weren't
+    // explicitly covered — their estimate values are kept but shown as green
+    // (actuals) since the cumulative 8-K totals have validated the period.
+    if (latestConfirmedDate) {
+      for (const day of rawDays) {
+        if (day.date <= latestConfirmedDate && day.atm_source !== "confirmed") {
+          day.atm_source = "confirmed";
+        }
       }
     }
 
@@ -336,7 +357,7 @@ export default function VolumeATMTracker() {
             <Badge variant="neutral">{(data.atm_events ?? []).length}</Badge>
           </div>
           <div style={{ maxHeight: 180, overflowY: "auto" }}>
-            {(data.atm_events ?? []).slice().reverse().map((evt: AtmEvent, i: number) => (
+            {([...(data.atm_events ?? [])] as AtmEvent[]).sort((a, b) => b.date.localeCompare(a.date)).map((evt: AtmEvent, i: number) => (
               <div key={i} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)", alignItems: "center" }}>
                 <span style={{ color: "var(--t3)", minWidth: 68 }}>{evt.date}</span>
                 <span className="mono" style={{ color: "var(--btc-d)", fontWeight: 600, minWidth: 42 }}>${(evt.proceeds_usd / 1e6).toFixed(0)}M</span>
