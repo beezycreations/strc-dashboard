@@ -33,7 +33,11 @@ interface AtmEvent {
 
 // Default participation rate and BTC price for estimation
 const DEFAULT_PARTICIPATION_RATE = 0.032;
-const VOLUME_THRESHOLD = 1.5; // volume must exceed 1.5× 20d avg to trigger estimate
+// ATM issuance is nearly continuous for STRC — Strategy issues most trading days.
+// Base estimation applies participation rate to ALL volume.
+// High-confidence days (volume > threshold × avg) get a higher participation rate.
+const HIGH_CONFIDENCE_THRESHOLD = 1.5;
+const HIGH_CONFIDENCE_MULTIPLIER = 1.5; // participation rate × 1.5 on spike days
 
 export default function VolumeATMTracker() {
   const { data, isLoading } = useVolumeAtm();
@@ -82,10 +86,14 @@ export default function VolumeATMTracker() {
         ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
         : v.strc_volume;
 
-      // Check if there's a confirmed/estimated ATM event
+      // Check if there's a confirmed/estimated ATM event from the API
       const atmEvent = atmEventMap.get(v.date);
 
-      // Daily ATM estimation: if no event logged but volume exceeds threshold, estimate
+      // Daily ATM estimation logic:
+      // - If confirmed/estimated event exists from API, use that
+      // - Otherwise, estimate daily issuance using participation rate × volume
+      //   (Strategy issues shares most trading days via continuous ATM programs)
+      // - Higher confidence on spike days (volume > 1.5× avg)
       let atm_proceeds = 0;
       let atm_btc = 0;
       let atm_source: "confirmed" | "estimated" | "inferred" | null = null;
@@ -94,10 +102,14 @@ export default function VolumeATMTracker() {
         atm_proceeds = atmEvent.proceeds_usd;
         atm_btc = atm_proceeds / btcPrice;
         atm_source = atmEvent.is_estimated ? "estimated" : "confirmed";
-      } else if (v.strc_volume > avg20d * VOLUME_THRESHOLD) {
-        // Infer potential ATM activity from excess volume
-        const excessShares = (v.strc_volume - avg20d) * participationRate;
-        atm_proceeds = excessShares * v.strc_price;
+      } else {
+        // Estimate daily ATM issuance from volume × participation rate
+        const isHighConfidence = v.strc_volume > avg20d * HIGH_CONFIDENCE_THRESHOLD;
+        const effectiveRate = isHighConfidence
+          ? participationRate * HIGH_CONFIDENCE_MULTIPLIER
+          : participationRate;
+        const estimatedShares = v.strc_volume * effectiveRate;
+        atm_proceeds = estimatedShares * v.strc_price;
         atm_btc = atm_proceeds / btcPrice;
         atm_source = "inferred";
       }
@@ -370,18 +382,20 @@ export default function VolumeATMTracker() {
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (<Badge variant="amber">Est.</Badge>): On days when daily volume
-              exceeds the 20-day moving average by {VOLUME_THRESHOLD}× or more, we estimate ATM activity using a calibrated participation rate.
-              This rate represents the historical proportion of daily trading volume attributable to ATM issuance, derived from
-              back-testing against confirmed 8-K filings.
+              <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (<Badge variant="amber">Est.</Badge>): Strategy&apos;s ATM programs operate
+              near-continuously — shares are issued on most trading days, not just during volume spikes. We estimate daily issuance
+              by applying a calibrated participation rate to total daily volume. On high-volume days (exceeding {HIGH_CONFIDENCE_THRESHOLD}× the
+              20-day average), the participation rate is scaled up by {HIGH_CONFIDENCE_MULTIPLIER}× to reflect that elevated volume often
+              correlates with more aggressive issuance.
             </p>
 
             <p style={{ marginBottom: 10 }}>
               <strong style={{ color: "var(--t2)" }}>Estimation formula</strong>:
             </p>
             <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
-              <div>excess_shares = (daily_volume − 20d_avg) × participation_rate</div>
-              <div>est_proceeds = excess_shares × VWAP</div>
+              <div>effective_rate = participation_rate × (1.5 if volume &gt; 1.5× 20d_avg, else 1.0)</div>
+              <div>est_shares = daily_volume × effective_rate</div>
+              <div>est_proceeds = est_shares × VWAP</div>
               <div>est_btc_purchased = est_proceeds ÷ btc_price</div>
             </div>
 
