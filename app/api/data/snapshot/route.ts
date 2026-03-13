@@ -244,10 +244,12 @@ const MOCK_SNAPSHOT = {
   atm_remaining: 800_000_000,
   atm_pace_90d_monthly: 380_000_000,
   // New overview cards — null until computed by daily-metrics cron
-  strc_notional: null as number | null,
-  strc_market_cap: null as number | null,
+  strc_notional: 3_842_800_000 as number | null,
+  strc_market_cap: (3_842_800_000 / 100) * 100.45 as number | null,
   strc_1m_vwap: null as number | null,
   strc_trading_volume_usd: null as number | null,
+  mstr_price: null as number | null,
+  mstr_change_pct: null as number | null,
 };
 
 export async function GET() {
@@ -403,6 +405,9 @@ export async function GET() {
       if (live.strc_volume !== null && live.strc_price !== null) {
         mock.strc_trading_volume_usd = live.strc_volume * live.strc_price;
       }
+      // MSTR price data
+      if (live.mstr_price !== null) mock.mstr_price = live.mstr_price;
+      if (live.mstr_change_pct !== null) mock.mstr_change_pct = live.mstr_change_pct;
       return NextResponse.json(mock);
     }
 
@@ -652,8 +657,8 @@ export async function GET() {
       mock.strc_trading_volume_usd = live.strc_volume * live.strc_price;
     }
     // MSTR price data
-    (mock as Record<string, unknown>).mstr_price = live.mstr_price;
-    (mock as Record<string, unknown>).mstr_change_pct = live.mstr_change_pct;
+    if (live.mstr_price !== null) mock.mstr_price = live.mstr_price;
+    if (live.mstr_change_pct !== null) mock.mstr_change_pct = live.mstr_change_pct;
 
     return NextResponse.json(mock);
   }
