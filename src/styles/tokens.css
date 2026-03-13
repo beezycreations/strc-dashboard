@@ -383,3 +383,56 @@ body {
     padding: 16px 12px;
   }
 }
+
+/* ═══════════════════════════════════════════
+   Responsive Grid Utilities
+   ═══════════════════════════════════════════ */
+
+/* Two-column grids that stack on mobile */
+.grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--card-gap);
+}
+
+.grid-7-5 {
+  display: grid;
+  grid-template-columns: 7fr 5fr;
+  gap: var(--card-gap);
+}
+
+.grid-2-3 {
+  display: grid;
+  grid-template-columns: 2fr 3fr;
+  gap: var(--card-gap);
+}
+
+.grid-3col {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--card-gap);
+}
+
+@media (max-width: 860px) {
+  .grid-2col,
+  .grid-7-5,
+  .grid-2-3,
+  .grid-3col {
+    grid-template-columns: 1fr;
+  }
+
+  /* Reduce card padding on mobile */
+  .card {
+    padding: 14px;
+  }
+}
+
+@media (max-width: 520px) {
+  /* Tighter gaps on small screens */
+  .grid-2col,
+  .grid-7-5,
+  .grid-2-3,
+  .grid-3col {
+    gap: 10px;
+  }
+}

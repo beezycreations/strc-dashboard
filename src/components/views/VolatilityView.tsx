@@ -111,7 +111,7 @@ export default function VolatilityView() {
       </div>
 
       {/* Correlation chart + Hedge reference panels */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
+      <div className="grid-2col">
         <div className="card">
           <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Rolling Correlation (30d)</div>
           <div style={{ height: 220 }}>

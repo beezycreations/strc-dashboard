@@ -182,7 +182,7 @@ export default function RateEngineView() {
       </div>
 
       {/* SOFR Forward Curve | Rate Floor Projection */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
+      <div className="grid-2col">
         <div className="card">
           <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>SOFR Forward Curve (SR1)</div>
           <div style={{ height: 220 }}>

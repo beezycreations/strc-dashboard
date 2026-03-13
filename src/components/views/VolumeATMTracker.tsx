@@ -418,7 +418,7 @@ export default function VolumeATMTracker() {
       </div>
 
       {/* Event Log + BTC Estimation */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
+      <div className="grid-2col">
         {/* ATM Event Log */}
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>

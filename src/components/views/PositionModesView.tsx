@@ -89,9 +89,9 @@ function LongMode({ snap }: { snap: Record<string, number & string & boolean> })
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
+      <div className="grid-2col">
         {/* Yield & Income */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
+        <div className="grid-2col">
           <KpiCard label="Effective Yield" dotColor="var(--accent)" value={fmtPct(s.strc_effective_yield)} />
           <KpiCard label="Par Spread" dotColor="var(--accent)" value={fmtBps(s.strc_par_spread_bps)} deltaType={s.strc_par_spread_bps >= 0 ? "up" : "down"} />
           <KpiCard label="Monthly Income" dotColor="var(--green)" value={`$${monthlyIncome.toLocaleString("en-US", { maximumFractionDigits: 0 })}`} footer={`$${positionSize.toLocaleString()} × ${fmtPct(s.strc_rate_pct)} ÷ 12`} />
@@ -176,7 +176,7 @@ function HedgeMode({ snap }: { snap: Record<string, number & string & boolean> }
         )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 3fr", gap: "var(--card-gap)" }}>
+      <div className="grid-2-3">
         {/* Calculator Panel */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {/* Inputs */}
