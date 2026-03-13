@@ -1,8 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { useVolumeAtm } from "@/src/lib/hooks/use-api";
+import { useState, useMemo } from "react";
+import { useVolumeAtm, useSnapshot } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
+import {
+  ComposedChart,
+  Line,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  CartesianGrid,
+} from "recharts";
+import { colors, rechartsDefaults } from "@/src/lib/chart-config";
 
 interface VolumeDay {
   date: string;
@@ -11,34 +23,105 @@ interface VolumeDay {
   mstr_volume: number;
 }
 
+interface AtmEvent {
+  date: string;
+  proceeds_usd: number;
+  shares_issued: number;
+  avg_price: number;
+  is_estimated: boolean;
+}
+
+// Default participation rate and BTC price for estimation
+const DEFAULT_PARTICIPATION_RATE = 0.032;
+const VOLUME_THRESHOLD = 1.5; // volume must exceed 1.5× 20d avg to trigger estimate
+
 export default function VolumeATMTracker() {
   const { data, isLoading } = useVolumeAtm();
+  const { data: snap } = useSnapshot();
   const [range, setRange] = useState<"1m" | "3m" | "all">("3m");
-  const [hoveredBar, setHoveredBar] = useState<number | null>(null);
   const [showMethodology, setShowMethodology] = useState(false);
 
-  if (isLoading || !data) {
-    return <div className="card"><div className="skeleton" style={{ height: 320 }} /></div>;
-  }
-
-  const kpi = data.kpi ?? {};
+  const kpi = data?.kpi ?? {};
+  const participationRate = kpi.participation_rate_current ?? DEFAULT_PARTICIPATION_RATE;
+  const btcPrice = snap?.btc_price ?? 70000;
 
   // Filter volume history by range
-  const now = new Date();
-  const cutoff =
-    range === "1m"
-      ? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())
-      : range === "3m"
-        ? new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
-        : new Date("2025-07-29");
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
-  const filteredVolume: VolumeDay[] = (data.volume_history ?? []).filter(
-    (v: VolumeDay) => v.date >= cutoffStr
-  );
+  const filteredVolume: VolumeDay[] = useMemo(() => {
+    if (!data?.volume_history) return [];
+    const now = new Date();
+    const cutoff =
+      range === "1m"
+        ? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())
+        : range === "3m"
+          ? new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
+          : new Date("2025-07-29");
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    return (data.volume_history as VolumeDay[]).filter((v) => v.date >= cutoffStr);
+  }, [data?.volume_history, range]);
 
-  const maxVol = filteredVolume.length > 0
-    ? Math.max(...filteredVolume.map((x) => x.strc_volume))
-    : 1;
+  // Build ATM event lookup by date
+  const atmEventMap = useMemo(() => {
+    const map = new Map<string, AtmEvent>();
+    for (const evt of (data?.atm_events ?? []) as AtmEvent[]) {
+      map.set(evt.date, evt);
+    }
+    return map;
+  }, [data?.atm_events]);
+
+  // Compute 20d moving average for volume-based ATM estimation
+  const chartData = useMemo(() => {
+    const allVolume = (data?.volume_history ?? []) as VolumeDay[];
+    const volByDate = new Map<string, number>();
+    allVolume.forEach((v) => volByDate.set(v.date, v.strc_volume));
+
+    return filteredVolume.map((v, idx) => {
+      // Calculate 20d avg from full history up to this point
+      const fullIdx = allVolume.findIndex((x) => x.date === v.date);
+      const lookback = allVolume.slice(Math.max(0, fullIdx - 19), fullIdx + 1);
+      const avg20d = lookback.length > 0
+        ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
+        : v.strc_volume;
+
+      // Check if there's a confirmed/estimated ATM event
+      const atmEvent = atmEventMap.get(v.date);
+
+      // Daily ATM estimation: if no event logged but volume exceeds threshold, estimate
+      let atm_proceeds = 0;
+      let atm_btc = 0;
+      let atm_source: "confirmed" | "estimated" | "inferred" | null = null;
+
+      if (atmEvent) {
+        atm_proceeds = atmEvent.proceeds_usd;
+        atm_btc = atm_proceeds / btcPrice;
+        atm_source = atmEvent.is_estimated ? "estimated" : "confirmed";
+      } else if (v.strc_volume > avg20d * VOLUME_THRESHOLD) {
+        // Infer potential ATM activity from excess volume
+        const excessShares = (v.strc_volume - avg20d) * participationRate;
+        atm_proceeds = excessShares * v.strc_price;
+        atm_btc = atm_proceeds / btcPrice;
+        atm_source = "inferred";
+      }
+
+      return {
+        date: v.date,
+        strc_volume: v.strc_volume,
+        mstr_volume: v.mstr_volume,
+        strc_price: v.strc_price,
+        avg_20d: Math.round(avg20d),
+        atm_proceeds_confirmed: atm_source === "confirmed" ? atm_proceeds / 1e6 : 0,
+        atm_proceeds_estimated: atm_source === "estimated" || atm_source === "inferred" ? atm_proceeds / 1e6 : 0,
+        atm_btc: atm_btc > 0 ? atm_btc : 0,
+        atm_source,
+      };
+    });
+  }, [filteredVolume, atmEventMap, data?.volume_history, participationRate, btcPrice]);
+
+  // Tick interval for X-axis
+  const tickInterval = Math.max(1, Math.floor(chartData.length / 10));
+
+  if (isLoading || !data) {
+    return <div className="card"><div className="skeleton" style={{ height: 420 }} /></div>;
+  }
 
   return (
     <div className="card">
@@ -82,100 +165,123 @@ export default function VolumeATMTracker() {
           value={`$${((kpi.strc_atm_remaining_usd ?? 0) / 1e9).toFixed(2)}B`}
           badge={(kpi.strc_atm_remaining_usd ?? 0) < 200_000_000 ? "red" : (kpi.strc_atm_remaining_usd ?? 0) < 500_000_000 ? "amber" : undefined}
         />
-        <KpiMini label="90d Pace" value={`$${((kpi.strc_atm_pace_90d_monthly_usd ?? 0) / 1e6).toFixed(0)}M/mo`} />
+        <KpiMini label="Est. BTC Bought" value={`${chartData.reduce((s, d) => s + d.atm_btc, 0).toFixed(1)} BTC`} />
       </div>
 
-      {/* Chart + Event Log */}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "var(--card-gap)" }}>
-        {/* Interactive volume bar chart */}
-        <div style={{ position: "relative" }}>
-          <div style={{ height: 240, display: "flex", alignItems: "flex-end", gap: 1 }}
-            onMouseLeave={() => setHoveredBar(null)}
-          >
-            {filteredVolume.map((v, i) => {
-              const hPct = maxVol > 0 ? (v.strc_volume / maxVol) * 100 : 0;
-              const isHovered = hoveredBar === i;
-              return (
-                <div
-                  key={v.date}
-                  onMouseEnter={() => setHoveredBar(i)}
-                  style={{
-                    flex: 1,
-                    minWidth: 2,
-                    height: `${hPct}%`,
-                    background: isHovered ? "var(--violet)" : "var(--accent)",
-                    opacity: hoveredBar !== null ? (isHovered ? 1 : 0.5) : 0.8,
-                    borderRadius: "2px 2px 0 0",
-                    cursor: "crosshair",
-                    transition: "opacity 0.1s ease",
-                  }}
-                />
-              );
-            })}
-          </div>
+      {/* Recharts ComposedChart */}
+      <div style={{ height: 320, marginBottom: 16 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={chartData} margin={{ top: 5, right: 60, bottom: 5, left: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 10, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
+              tickFormatter={(v: string) => {
+                const d = new Date(v + "T00:00:00");
+                return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+              }}
+              interval={tickInterval}
+            />
+            {/* Left Y-axis: Volume (shares) */}
+            <YAxis
+              yAxisId="vol"
+              tick={{ fontSize: 10, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
+              tickFormatter={(v: number) => fmtK(v)}
+              width={55}
+            />
+            {/* Right Y-axis: ATM Proceeds ($M) */}
+            <YAxis
+              yAxisId="atm"
+              orientation="right"
+              tick={{ fontSize: 10, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
+              tickFormatter={(v: number) => `$${v.toFixed(0)}M`}
+              width={55}
+            />
+            <Tooltip
+              contentStyle={rechartsDefaults.tooltipStyle}
+              labelFormatter={(label: unknown) => {
+                const d = new Date(String(label) + "T00:00:00");
+                return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+              }}
+              formatter={(value: unknown, name: unknown) => {
+                const v = Number(value);
+                if (v === 0) return null;
+                switch (String(name)) {
+                  case "strc_volume": return [fmtK(v) + " shares", "STRC Volume"];
+                  case "mstr_volume": return [fmtK(v) + " shares", "MSTR Volume"];
+                  case "atm_proceeds_confirmed": return [`$${v.toFixed(1)}M`, "ATM Issuance (8-K)"];
+                  case "atm_proceeds_estimated": return [`$${v.toFixed(1)}M`, "ATM Issuance (Est.)"];
+                  default: return [`${v}`, String(name)];
+                }
+              }}
+            />
+            <Legend
+              verticalAlign="top"
+              align="right"
+              wrapperStyle={{ fontSize: 11, fontFamily: rechartsDefaults.fontFamily, paddingBottom: 8 }}
+              formatter={(value: string) => {
+                switch (value) {
+                  case "strc_volume": return "STRC Volume";
+                  case "mstr_volume": return "MSTR Volume";
+                  case "atm_proceeds_confirmed": return "ATM (8-K Confirmed)";
+                  case "atm_proceeds_estimated": return "ATM (Estimated)";
+                  default: return value;
+                }
+              }}
+            />
+            {/* STRC volume line */}
+            <Line
+              yAxisId="vol"
+              type="monotone"
+              dataKey="strc_volume"
+              stroke={colors.accent}
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, stroke: colors.accent, fill: "#fff" }}
+            />
+            {/* MSTR volume line (lighter, dashed) */}
+            <Line
+              yAxisId="vol"
+              type="monotone"
+              dataKey="mstr_volume"
+              stroke={colors.t3}
+              strokeWidth={1.5}
+              strokeDasharray="4 4"
+              dot={false}
+              activeDot={{ r: 3, stroke: colors.t3, fill: "#fff" }}
+            />
+            {/* ATM issuance bars — confirmed (green) */}
+            <Bar
+              yAxisId="atm"
+              dataKey="atm_proceeds_confirmed"
+              fill={colors.green}
+              opacity={0.85}
+              barSize={6}
+              radius={[2, 2, 0, 0]}
+            />
+            {/* ATM issuance bars — estimated (amber) */}
+            <Bar
+              yAxisId="atm"
+              dataKey="atm_proceeds_estimated"
+              fill={colors.amber}
+              opacity={0.7}
+              barSize={6}
+              radius={[2, 2, 0, 0]}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
 
-          {/* Hover tooltip */}
-          {hoveredBar !== null && filteredVolume[hoveredBar] && (() => {
-            const v = filteredVolume[hoveredBar];
-            const leftPct = ((hoveredBar + 0.5) / filteredVolume.length) * 100;
-            const clampedLeft = Math.max(15, Math.min(85, leftPct));
-            const d = new Date(v.date + "T00:00:00");
-            const dateLabel = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-            return (
-              <div style={{
-                position: "absolute",
-                bottom: 248,
-                left: `${clampedLeft}%`,
-                transform: "translateX(-50%)",
-                background: "var(--t1)",
-                color: "#fff",
-                padding: "8px 12px",
-                borderRadius: "var(--r-sm)",
-                fontSize: "var(--text-xs)",
-                boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-                zIndex: 10,
-                whiteSpace: "nowrap",
-                pointerEvents: "none",
-              }}>
-                <div style={{ fontWeight: 600, marginBottom: 3 }}>{dateLabel}</div>
-                <div className="mono" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <span>STRC Vol: {v.strc_volume.toLocaleString()} shares</span>
-                  <span>STRC Price: ${v.strc_price.toFixed(2)}</span>
-                  <span>MSTR Vol: {v.mstr_volume.toLocaleString()}</span>
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* X-axis date labels */}
-          <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 4 }}>
-            {filteredVolume.length > 0 && (() => {
-              const step = Math.max(1, Math.floor(filteredVolume.length / 6));
-              const indices = [0];
-              for (let i = step; i < filteredVolume.length - 1; i += step) indices.push(i);
-              indices.push(filteredVolume.length - 1);
-              // Deduplicate last if close
-              const unique = [...new Set(indices)];
-              return unique.map((idx) => {
-                const d = new Date(filteredVolume[idx].date + "T00:00:00");
-                return (
-                  <span key={idx} style={{ fontSize: "var(--text-xs)", color: "var(--t3)" }}>
-                    {d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                  </span>
-                );
-              });
-            })()}
-          </div>
-        </div>
-
+      {/* Event Log + BTC Estimation */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
         {/* ATM Event Log */}
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)" }}>ATM Events</span>
             <Badge variant="neutral">{(data.atm_events ?? []).length}</Badge>
           </div>
-          <div style={{ maxHeight: 220, overflowY: "auto" }}>
-            {(data.atm_events ?? []).slice().reverse().map((evt: { date: string; proceeds_usd: number; shares_issued: number; avg_price: number; is_estimated: boolean }, i: number) => (
+          <div style={{ maxHeight: 180, overflowY: "auto" }}>
+            {(data.atm_events ?? []).slice().reverse().map((evt: AtmEvent, i: number) => (
               <div key={i} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)", alignItems: "center" }}>
                 <span style={{ color: "var(--t3)", minWidth: 68 }}>{evt.date}</span>
                 <span className="mono" style={{ color: "var(--btc-d)", fontWeight: 600, minWidth: 42 }}>${(evt.proceeds_usd / 1e6).toFixed(0)}M</span>
@@ -191,6 +297,37 @@ export default function VolumeATMTracker() {
             {(data.atm_events ?? []).length === 0 && (
               <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", padding: "8px 0" }}>No ATM events recorded</div>
             )}
+          </div>
+        </div>
+
+        {/* BTC Purchase Estimation Summary */}
+        <div>
+          <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)", marginBottom: 8 }}>Estimated BTC Accumulation</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <MiniStat
+              label="Total ATM Proceeds (period)"
+              value={`$${chartData.reduce((s, d) => s + d.atm_proceeds_confirmed + d.atm_proceeds_estimated, 0).toFixed(0)}M`}
+            />
+            <MiniStat
+              label="Est. BTC Purchased"
+              value={`${chartData.reduce((s, d) => s + d.atm_btc, 0).toFixed(1)} BTC`}
+            />
+            <MiniStat
+              label="Avg BTC Price Used"
+              value={`$${btcPrice.toLocaleString()}`}
+            />
+            <MiniStat
+              label="Active Issuance Days"
+              value={`${chartData.filter(d => d.atm_source !== null).length} / ${chartData.length}`}
+            />
+            <MiniStat
+              label="Confirmed vs Estimated"
+              value={`${chartData.filter(d => d.atm_source === "confirmed").length} / ${chartData.filter(d => d.atm_source === "estimated" || d.atm_source === "inferred").length}`}
+            />
+            <MiniStat
+              label="Participation Rate"
+              value={`${(participationRate * 100).toFixed(1)}%`}
+            />
           </div>
         </div>
       </div>
@@ -215,28 +352,57 @@ export default function VolumeATMTracker() {
           <span style={{ transform: showMethodology ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s ease", display: "inline-block" }}>
             ▶
           </span>
-          ATM Estimation Methodology
+          ATM Estimation &amp; BTC Flywheel Methodology
         </button>
         {showMethodology && (
-          <div style={{ marginTop: 10, fontSize: "var(--text-xs)", color: "var(--t3)", lineHeight: 1.6, maxWidth: 720 }}>
-            <p style={{ marginBottom: 8 }}>
-              <strong style={{ color: "var(--t2)" }}>Confirmed events</strong> (labeled <Badge variant="green">8-K</Badge>) are sourced directly from SEC EDGAR 8-K filings
-              or official press releases, which report exact proceeds, shares issued, and weighted average price.
+          <div style={{ marginTop: 10, fontSize: "var(--text-xs)", color: "var(--t3)", lineHeight: 1.6 }}>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>The BTC Flywheel</strong>: Strategy (formerly MicroStrategy) uses ATM equity
+              offerings to raise capital, which is then deployed to purchase Bitcoin. This creates a self-reinforcing cycle: equity
+              issuance → BTC purchases → increased BTC reserves → higher mNAV → further issuance capacity. The preferred stock
+              tranches (STRC, STRF, STRK, STRD) fund the same treasury alongside MSTR common ATM issuance.
             </p>
-            <p style={{ marginBottom: 8 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (labeled <Badge variant="amber">Est.</Badge>) are inferred on days when STRC trading volume
-              significantly exceeds its 20-day moving average without a corresponding market catalyst. The estimation uses a calibrated
-              participation rate — the historical ratio of ATM shares issued to total daily volume — derived from confirmed 8-K filings.
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Confirmed events</strong> (<Badge variant="green">8-K</Badge>): Sourced directly from SEC EDGAR 8-K filings
+              or official press releases. These report exact proceeds, shares issued, and weighted-average price.
+              Strategy typically files 8-Ks within 2–5 business days of issuance.
             </p>
-            <p style={{ marginBottom: 8 }}>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (<Badge variant="amber">Est.</Badge>): On days when daily volume
+              exceeds the 20-day moving average by {VOLUME_THRESHOLD}× or more, we estimate ATM activity using a calibrated participation rate.
+              This rate represents the historical proportion of daily trading volume attributable to ATM issuance, derived from
+              back-testing against confirmed 8-K filings.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Estimation formula</strong>:
+            </p>
+            <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
+              <div>excess_shares = (daily_volume − 20d_avg) × participation_rate</div>
+              <div>est_proceeds = excess_shares × VWAP</div>
+              <div>est_btc_purchased = est_proceeds ÷ btc_price</div>
+            </div>
+
+            <p style={{ marginBottom: 10 }}>
               <strong style={{ color: "var(--t2)" }}>Participation rate</strong>: Currently calibrated
-              at {((kpi.participation_rate_current ?? 0.032) * 100).toFixed(1)}% (range: {((kpi.participation_rate_range?.[0] ?? 0.018) * 100).toFixed(1)}%–{((kpi.participation_rate_range?.[1] ?? 0.045) * 100).toFixed(1)}%).
-              This means for every 1M shares traded, approximately {((kpi.participation_rate_current ?? 0.032) * 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 0 })} shares
-              are estimated as ATM issuance.
+              at {(participationRate * 100).toFixed(1)}% (historical
+              range: {((kpi.participation_rate_range?.[0] ?? 0.018) * 100).toFixed(1)}%–{((kpi.participation_rate_range?.[1] ?? 0.045) * 100).toFixed(1)}%).
+              The rate is recalibrated periodically as new 8-K filings provide ground-truth data points.
             </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>BTC purchase estimation</strong>: ATM proceeds (confirmed or estimated) are divided
+              by the day&apos;s BTC closing price to derive estimated BTC acquired. This assumes Strategy deploys ATM proceeds to BTC
+              within 1–2 trading days, consistent with their disclosed purchasing cadence.
+            </p>
+
             <p style={{ margin: 0 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimated proceeds</strong> are calculated as: (daily volume × participation rate × VWAP).
-              Estimates are retroactively replaced with confirmed figures when the corresponding 8-K is filed, typically within 2–5 business days.
+              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: Estimates may overstate issuance on high-volume days driven by
+              market events (earnings, index rebalancing) rather than ATM activity. Estimates are retroactively replaced with confirmed
+              figures when the corresponding 8-K is filed. Inferred events (where no confirmed or estimated event exists but volume
+              patterns suggest activity) carry the highest uncertainty.
             </p>
           </div>
         )}
@@ -253,6 +419,15 @@ function KpiMini({ label, value, badge }: { label: string; value: string; badge?
         <span className="mono" style={{ fontSize: "var(--text-base)", fontWeight: 600 }}>{value}</span>
         {badge && <Badge variant={badge}>{badge === "red" ? "!" : "~"}</Badge>}
       </div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ padding: "6px 0" }}>
+      <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", marginBottom: 2 }}>{label}</div>
+      <div className="mono" style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t1)" }}>{value}</div>
     </div>
   );
 }
