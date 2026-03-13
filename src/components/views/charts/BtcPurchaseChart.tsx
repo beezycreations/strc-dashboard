@@ -141,6 +141,7 @@ export default function BtcPurchaseChart() {
   const { data, isLoading } = useVolumeAtm();
   const { data: snap } = useSnapshot();
   const [range, setRange] = useState<"3m" | "6m" | "1y" | "all">("3m");
+  const [showMethodology, setShowMethodology] = useState(false);
 
   const btcPrice = snap?.btc_price ?? 83000;
 
@@ -434,6 +435,85 @@ export default function BtcPurchaseChart() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Methodology section */}
+      <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+        <button
+          onClick={() => setShowMethodology(!showMethodology)}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: 0,
+            fontSize: "var(--text-xs)",
+            color: "var(--t3)",
+            fontWeight: 500,
+          }}
+        >
+          <span style={{ transform: showMethodology ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s ease", display: "inline-block" }}>
+            ▶
+          </span>
+          BTC Purchase Estimation Methodology
+        </button>
+        {showMethodology && (
+          <div style={{ marginTop: 10, fontSize: "var(--text-xs)", color: "var(--t3)", lineHeight: 1.6 }}>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Data source</strong>: Confirmed purchases (<Badge variant="green">8-K</Badge>) are sourced
+              directly from Strategy&apos;s SEC 8-K filings and the official purchase history
+              at <span className="mono">strategy.com/purchases</span>. Each filing reports exact BTC acquired, total cost,
+              and weighted-average purchase price for a specific reporting period.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>The BTC Flywheel</strong>: Strategy raises capital through ATM equity offerings
+              (MSTR common stock) and perpetual preferred stock issuance (STRC, STRF, STRK, STRD), then deploys
+              proceeds to purchase Bitcoin. This creates a self-reinforcing cycle: capital raises → BTC purchases
+              → increased BTC reserve → higher mNAV → further issuance capacity. Strategy typically deploys ATM
+              proceeds to BTC within 1–2 trading days.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Estimated purchases</strong> (<Badge variant="amber">Est.</Badge>): After the most recent
+              confirmed 8-K filing, daily BTC purchases are estimated using the change in cumulative ATM
+              proceeds (both MSTR common and preferred stock programs) divided by the current BTC price.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Estimation formula</strong>:
+            </p>
+            <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
+              <div>daily_atm_usd = delta(mstr_cumulative_atm) + delta(strc_cumulative_atm)</div>
+              <div>btc_conversion_rate = 0.95  // ~95% of proceeds deployed to BTC</div>
+              <div>est_btc_purchased = (daily_atm_usd × btc_conversion_rate) / btc_price</div>
+              <div>cumulative_btc = last_confirmed_total + sum(est_btc_purchased)</div>
+            </div>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Cumulative total</strong>: The cumulative line anchors to the last confirmed
+              8-K total ({LATEST_CONFIRMED_BTC.toLocaleString()} BTC as of {LATEST_CONFIRMED_DATE}) and builds forward
+              with daily estimates. This ensures the chart always ties to Strategy&apos;s actual reported holdings.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>8-K reconciliation</strong>: When a new 8-K filing is published, it is added to the
+              confirmed purchase history. All prior estimated bars for that period are replaced by the confirmed
+              figure, and the cumulative total resets to the new confirmed value. Strategy typically files 8-Ks
+              weekly, so estimates are usually outstanding for 5–10 trading days before being reconciled.
+            </p>
+
+            <p style={{ margin: 0 }}>
+              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The 95% BTC conversion rate is an approximation — Strategy
+              may retain a portion of proceeds for operating expenses, debt service, or cash reserves. Estimates
+              also assume ATM proceeds are deployed at the current BTC price, whereas actual purchases may be
+              executed at different prices over multiple days. All estimates are provisional and will be replaced
+              by confirmed figures as 8-K filings are processed.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

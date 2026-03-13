@@ -121,11 +121,11 @@ export default function OverviewView() {
         </div>
       </div>
 
-      {/* MSTR Bitcoin Purchases */}
-      <BtcPurchaseChart />
-
       {/* Volume + ATM Issuance Tracker */}
       <VolumeATMTracker />
+
+      {/* Strategy Bitcoin Purchases */}
+      <BtcPurchaseChart />
 
       {/* Bottom row: BTC Coverage | ATM Utilization | Rate Countdown */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "var(--card-gap)" }}>
