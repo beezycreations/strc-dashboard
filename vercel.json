@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/prices",
-      "schedule": "* * * * *"
+      "schedule": "0 */4 * * *"
     },
     {
       "path": "/api/cron/daily-metrics",
@@ -10,11 +10,11 @@
     },
     {
       "path": "/api/cron/sofr",
-      "schedule": "0 16 * * 1-5"
+      "schedule": "0 16 * * *"
     },
     {
       "path": "/api/cron/edgar-check",
-      "schedule": "0 * * * *"
+      "schedule": "0 2 * * *"
     }
   ]
 }
