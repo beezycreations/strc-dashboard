@@ -75,10 +75,10 @@ export default function OverviewView() {
       </div>
 
       {/* Price + Rate chart | Capital Stack */}
-      <div style={{ display: "grid", gridTemplateColumns: "7fr 5fr", gap: "var(--card-gap)" }}>
-        <div className="card">
+      <div style={{ display: "grid", gridTemplateColumns: "7fr 5fr", gap: "var(--card-gap)", minHeight: 420 }}>
+        <div className="card" style={{ display: "flex", flexDirection: "column" }}>
           <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>STRC Price and Rate History</div>
-          <div style={{ height: 280 }}>
+          <div style={{ flex: 1, minHeight: 0 }}>
             <PriceRateChart data={history} />
           </div>
         </div>
