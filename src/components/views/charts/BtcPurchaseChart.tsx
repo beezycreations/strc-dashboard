@@ -235,11 +235,11 @@ export default function BtcPurchaseChart() {
   return (
     <div className="card">
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
         <div>
           <div style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Strategy Bitcoin Purchases</div>
           <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", marginTop: 2 }}>
-            Source: strategy.com/purchases — 8-K confirmed acquisitions + daily estimates
+            Source: strategy.com/purchases
           </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
@@ -294,9 +294,9 @@ export default function BtcPurchaseChart() {
       </div>
 
       {/* Chart */}
-      <div style={{ height: 340, marginBottom: 16 }}>
+      <div style={{ height: 300, marginBottom: 16 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData} margin={{ top: 5, right: 60, bottom: 5, left: 5 }}>
+          <ComposedChart data={chartData} margin={{ top: 5, right: 10, bottom: 5, left: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
             <XAxis
               dataKey="date"
@@ -312,17 +312,17 @@ export default function BtcPurchaseChart() {
             {/* Left Y-axis: BTC per purchase event */}
             <YAxis
               yAxisId="daily"
-              tick={{ fontSize: 10, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
+              tick={{ fontSize: 9, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
               tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : `${v}`}
-              width={50}
+              width={40}
             />
             {/* Right Y-axis: Cumulative BTC */}
             <YAxis
               yAxisId="cumulative"
               orientation="right"
-              tick={{ fontSize: 10, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
+              tick={{ fontSize: 9, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
               tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`}
-              width={50}
+              width={40}
             />
             <Tooltip
               contentStyle={rechartsDefaults.tooltipStyle}
@@ -394,21 +394,21 @@ export default function BtcPurchaseChart() {
           </span>
           <Badge variant="neutral">{CONFIRMED_PURCHASES.length} total</Badge>
         </div>
-        <div style={{ maxHeight: 200, overflowY: "auto" }}>
+        <div style={{ maxHeight: 200, overflowY: "auto", overflowX: "auto" }}>
           {[...CONFIRMED_PURCHASES].reverse().slice(0, 15).map((p, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)", alignItems: "center" }}>
-              <span style={{ color: "var(--t3)", minWidth: 72 }}>{p.date}</span>
-              <span className="mono" style={{ color: colors.btc, fontWeight: 600, minWidth: 72 }}>
-                +{p.btc.toLocaleString()} BTC
+            <div key={i} style={{ display: "flex", gap: 6, padding: "5px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)", alignItems: "center", minWidth: "fit-content" }}>
+              <span style={{ color: "var(--t3)", whiteSpace: "nowrap" }}>{p.date}</span>
+              <span className="mono" style={{ color: colors.btc, fontWeight: 600, whiteSpace: "nowrap" }}>
+                +{p.btc.toLocaleString()}
               </span>
-              <span className="mono" style={{ color: "var(--t2)", minWidth: 55 }}>
+              <span className="mono" style={{ color: "var(--t2)", whiteSpace: "nowrap" }}>
                 ${p.cost_m >= 1000 ? `${(p.cost_m / 1000).toFixed(2)}B` : `${p.cost_m}M`}
               </span>
-              <span className="mono" style={{ color: "var(--t3)", minWidth: 55 }}>
+              <span className="mono" style={{ color: "var(--t3)", whiteSpace: "nowrap" }}>
                 @${(p.avg_cost / 1000).toFixed(1)}K
               </span>
-              <span className="mono" style={{ color: "var(--t3)", fontSize: "var(--text-xs)" }}>
-                = {p.cumulative.toLocaleString()}
+              <span className="mono" style={{ color: "var(--t3)", whiteSpace: "nowrap" }}>
+                ={p.cumulative.toLocaleString()}
               </span>
               <Badge variant="green">8-K</Badge>
             </div>

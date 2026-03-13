@@ -14,5 +14,5 @@ const variantClass: Record<BadgeVariant, string> = {
 };
 
 export default function Badge({ variant, children }: BadgeProps) {
-  return <span className={`badge ${variantClass[variant]}`}>{children}</span>;
+  return <span className={`badge ${variantClass[variant]}`} style={{ whiteSpace: "nowrap" }}>{children}</span>;
 }

@@ -271,8 +271,8 @@ export default function VolumeATMTracker() {
   return (
     <div className="card">
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <div style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Volume and ATM Issuance Tracker</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Volume & ATM Tracker</div>
         <div style={{ display: "flex", gap: 4 }}>
           {(["1m", "3m", "all"] as const).map((r) => (
             <button
@@ -314,9 +314,9 @@ export default function VolumeATMTracker() {
       </div>
 
       {/* Recharts ComposedChart */}
-      <div style={{ height: 320, marginBottom: 16 }}>
+      <div style={{ height: 300, marginBottom: 16 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData} margin={{ top: 5, right: 60, bottom: 5, left: 5 }}>
+          <ComposedChart data={chartData} margin={{ top: 5, right: 10, bottom: 5, left: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
             <XAxis
               dataKey="date"
@@ -330,17 +330,17 @@ export default function VolumeATMTracker() {
             {/* Left Y-axis: Volume (shares) */}
             <YAxis
               yAxisId="vol"
-              tick={{ fontSize: 10, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
+              tick={{ fontSize: 9, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
               tickFormatter={(v: number) => fmtK(v)}
-              width={55}
+              width={40}
             />
             {/* Right Y-axis: ATM Proceeds ($M) */}
             <YAxis
               yAxisId="atm"
               orientation="right"
-              tick={{ fontSize: 10, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
+              tick={{ fontSize: 9, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
               tickFormatter={(v: number) => `$${v.toFixed(0)}M`}
-              width={55}
+              width={45}
             />
             <Tooltip
               contentStyle={rechartsDefaults.tooltipStyle}
@@ -425,13 +425,13 @@ export default function VolumeATMTracker() {
             <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)" }}>ATM Events</span>
             <Badge variant="neutral">{(data.atm_events ?? []).length}</Badge>
           </div>
-          <div style={{ maxHeight: 180, overflowY: "auto" }}>
+          <div style={{ maxHeight: 180, overflowY: "auto", overflowX: "auto" }}>
             {([...(data.atm_events ?? [])] as AtmEvent[]).sort((a, b) => b.date.localeCompare(a.date)).map((evt: AtmEvent, i: number) => (
-              <div key={i} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)", alignItems: "center" }}>
-                <span style={{ color: "var(--t3)", minWidth: 68 }}>{evt.date}</span>
-                <span className="mono" style={{ color: "var(--btc-d)", fontWeight: 600, minWidth: 42 }}>${(evt.proceeds_usd / 1e6).toFixed(0)}M</span>
-                <span className="mono" style={{ color: "var(--t2)", minWidth: 50 }}>{(evt.shares_issued / 1e6).toFixed(1)}M sh</span>
-                <span className="mono" style={{ color: "var(--t3)", minWidth: 48 }}>@${evt.avg_price.toFixed(2)}</span>
+              <div key={i} style={{ display: "flex", gap: 6, padding: "5px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)", alignItems: "center", minWidth: "fit-content" }}>
+                <span style={{ color: "var(--t3)", whiteSpace: "nowrap" }}>{evt.date}</span>
+                <span className="mono" style={{ color: "var(--btc-d)", fontWeight: 600, whiteSpace: "nowrap" }}>${(evt.proceeds_usd / 1e6).toFixed(0)}M</span>
+                <span className="mono" style={{ color: "var(--t2)", whiteSpace: "nowrap" }}>{(evt.shares_issued / 1e6).toFixed(1)}M sh</span>
+                <span className="mono" style={{ color: "var(--t3)", whiteSpace: "nowrap" }}>@${evt.avg_price.toFixed(2)}</span>
                 {evt.is_estimated ? (
                   <Badge variant="amber">Est.</Badge>
                 ) : (

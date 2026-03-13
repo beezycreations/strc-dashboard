@@ -435,4 +435,16 @@ body {
   .grid-3col {
     gap: 10px;
   }
+
+  /* Prevent recharts legend from overlapping chart */
+  .recharts-legend-wrapper {
+    font-size: 9px !important;
+  }
+
+  /* Ensure tables scroll horizontally on small screens */
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
