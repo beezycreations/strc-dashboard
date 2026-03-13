@@ -5,8 +5,7 @@ import Badge from "@/src/components/ui/Badge";
 import { StatRow, CoverageMatrix, TrancheSensitivityTable } from "@/src/components/ui";
 import { fmtPct } from "@/src/lib/utils/format";
 import { TRANCHE_CONFIGS } from "@/src/lib/calculators/tranche-metrics";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
-import { colors, rechartsDefaults } from "@/src/lib/chart-config";
+
 
 export default function TrancheProductView() {
   const { data: tranche, isLoading } = useTranche();
@@ -27,8 +26,8 @@ export default function TrancheProductView() {
         <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Pool NAV & Per-Unit Valuation</div>
         <StatRow cells={[
           { label: "Pool NAV", value: `$${((t.pool_nav ?? 10_000_000) / 1e6).toFixed(2)}M`, color: "var(--accent)" },
-          { label: "Senior NAV/Unit", value: `$${(t.senior_nav_per_unit ?? 100).toFixed(2)}` },
-          { label: "Junior NAV/Unit (A)", value: `$${(t.junior_nav_per_unit_a ?? 100).toFixed(2)}` },
+          { label: "Senior NAV/Unit", value: `$${(configs[0]?.senior_nav_per_unit ?? 100).toFixed(2)}` },
+          { label: "Junior NAV/Unit (A)", value: `$${(configs[0]?.junior_nav_per_unit ?? 100).toFixed(2)}` },
           { label: "STRC Rate", value: fmtPct(strcRate), color: "var(--violet)" },
         ]} />
       </div>
@@ -72,31 +71,9 @@ export default function TrancheProductView() {
         <div className="card">
           <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Excess Spread History</div>
           <div style={{ height: 220 }}>
-            {configs.length > 0 && configs[0].excess_spread_history?.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={configs[0].excess_spread_history} margin={{ top: 5, right: 20, bottom: 5, left: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: string) => v.slice(5)} interval="preserveStartEnd" />
-                  <YAxis domain={[0, 10]} tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
-                  <Tooltip contentStyle={rechartsDefaults.tooltipStyle} />
-                  <ReferenceLine y={0} stroke={colors.red} strokeDasharray="4 4" />
-                  {configs.map((cfg: { name: string }, idx: number) => (
-                    <Line
-                      key={cfg.name}
-                      dataKey="est_pct"
-                      name={`Config ${cfg.name}`}
-                      stroke={idx === 0 ? colors.green : idx === 1 ? colors.accent : colors.amber}
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--t3)", fontSize: "var(--text-sm)" }}>
-                Excess spread history builds over time
-              </div>
-            )}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--t3)", fontSize: "var(--text-sm)" }}>
+              Excess spread history builds over time
+            </div>
           </div>
         </div>
 

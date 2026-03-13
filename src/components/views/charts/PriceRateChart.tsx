@@ -16,7 +16,7 @@ import { colors, rechartsDefaults } from "@/src/lib/chart-config";
 interface PriceRateChartProps {
   data?: {
     prices?: Array<{ date: string; strc: number }>;
-    rates?: Array<{ date: string; rate_pct: number; sofr_pct: number; is_confirmed: boolean }>;
+    rates?: Array<{ date: string; strc_rate_pct: number; sofr_1m_pct: number }>;
   };
 }
 
@@ -35,8 +35,8 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
     return {
       date: p.date,
       strc: p.strc,
-      rate_pct: rate?.rate_pct ?? null,
-      sofr_pct: rate?.sofr_pct ?? null,
+      rate_pct: rate?.strc_rate_pct ?? null,
+      sofr_pct: rate?.sofr_1m_pct ?? null,
     };
   });
 

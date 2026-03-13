@@ -52,8 +52,8 @@ export default function RateEngineView() {
                 <XAxis dataKey="date" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: string) => v.slice(2, 7)} interval="preserveStartEnd" />
                 <YAxis domain={[0, 14]} tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
                 <Tooltip contentStyle={rechartsDefaults.tooltipStyle} />
-                <Bar dataKey="rate_pct" name="STRC Rate" fill={colors.violet} opacity={0.7} barSize={8} />
-                <Line type="stepAfter" dataKey="sofr_pct" name="SOFR 1M" stroke={colors.accent} strokeDasharray="4 4" strokeWidth={1.5} dot={false} />
+                <Bar dataKey="strc_rate_pct" name="STRC Rate" fill={colors.violet} opacity={0.7} barSize={8} />
+                <Line type="stepAfter" dataKey="sofr_1m_pct" name="SOFR 1M" stroke={colors.accent} strokeDasharray="4 4" strokeWidth={1.5} dot={false} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
@@ -64,17 +64,13 @@ export default function RateEngineView() {
           <div style={{ maxHeight: 260, overflowY: "auto" }}>
             {rates.length > 0 ? (
               [...rates].reverse().filter((_: unknown, i: number) => {
-                // Show only rate change events (deduplicate)
                 if (i === 0) return true;
-                const prev = [...rates].reverse()[i - 1] as { rate_pct: number };
-                return (rates as Array<{ rate_pct: number }>).reverse()[i] && prev.rate_pct !== (rates as Array<{ rate_pct: number }>).reverse()[i]?.rate_pct;
-              }).slice(0, 20).map((r: { date: string; rate_pct: number; is_confirmed: boolean }, i: number) => (
+                const reversed = [...rates].reverse() as Array<{ strc_rate_pct: number }>;
+                return reversed[i]?.strc_rate_pct !== reversed[i - 1]?.strc_rate_pct;
+              }).slice(0, 20).map((r: { date: string; strc_rate_pct: number }, i: number) => (
                 <div key={i} style={{ display: "flex", gap: 8, padding: "6px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-sm)" }}>
                   <span style={{ color: "var(--t3)", minWidth: 70 }}>{r.date}</span>
-                  <span className="mono" style={{ fontWeight: 600, color: "var(--violet)" }}>{fmtPct(r.rate_pct)}</span>
-                  <Badge variant={r.is_confirmed ? "green" : "amber"}>
-                    {r.is_confirmed ? "Confirmed" : "Est."}
-                  </Badge>
+                  <span className="mono" style={{ fontWeight: 600, color: "var(--violet)" }}>{fmtPct(r.strc_rate_pct)}</span>
                 </div>
               ))
             ) : (
@@ -93,11 +89,11 @@ export default function RateEngineView() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={sofrForward} margin={{ top: 5, right: 20, bottom: 5, left: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
-                  <XAxis dataKey="month_n" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `M+${v}`} />
+                  <XAxis dataKey="term" tick={{ fontSize: 10, fill: colors.t3 }} />
                   <YAxis domain={[2, 6]} tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
                   <Tooltip contentStyle={rechartsDefaults.tooltipStyle} />
                   <ReferenceLine y={s.sofr_1m_pct} stroke={colors.accent} strokeDasharray="4 4" label={{ value: "Current SOFR", fill: colors.t3, fontSize: 10 }} />
-                  <Line type="monotone" dataKey="implied_sofr" stroke={colors.accent} strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="rate" stroke={colors.accent} strokeWidth={2} dot={{ r: 3 }} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (

@@ -12,7 +12,7 @@ export default function VolumeATMTracker() {
     return <div className="card"><div className="skeleton" style={{ height: 320 }} /></div>;
   }
 
-  const d = data;
+  const kpi = data.kpi ?? {};
 
   // Filter volume history by range
   const now = new Date();
@@ -23,7 +23,7 @@ export default function VolumeATMTracker() {
         ? new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
         : new Date("2025-07-29");
   const cutoffStr = cutoff.toISOString().slice(0, 10);
-  const filteredVolume = (d.volume_history ?? []).filter(
+  const filteredVolume = (data.volume_history ?? []).filter(
     (v: { date: string }) => v.date >= cutoffStr
   );
 
@@ -56,20 +56,20 @@ export default function VolumeATMTracker() {
 
       {/* KPI Strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12, marginBottom: 16 }}>
-        <KpiMini label="Today Volume" value={fmtK(d.volume_today)} />
-        <KpiMini label="20d Avg" value={fmtK(d.volume_avg_20d)} />
+        <KpiMini label="Today Volume" value={fmtK(kpi.strc_volume_today ?? 0)} />
+        <KpiMini label="20d Avg" value={fmtK(kpi.strc_volume_avg_20d ?? 0)} />
         <KpiMini
           label="Vol / Avg"
-          value={`${d.volume_ratio.toFixed(2)}×`}
-          badge={d.volume_ratio >= 3 ? "red" : d.volume_ratio >= 2 ? "amber" : undefined}
+          value={`${(kpi.strc_volume_ratio ?? 1).toFixed(2)}×`}
+          badge={(kpi.strc_volume_ratio ?? 1) >= 3 ? "red" : (kpi.strc_volume_ratio ?? 1) >= 2 ? "amber" : undefined}
         />
-        <KpiMini label="ATM Deployed" value={`$${(d.atm_deployed / 1e9).toFixed(2)}B`} />
+        <KpiMini label="ATM Deployed" value={`$${((kpi.strc_atm_deployed_usd ?? 0) / 1e9).toFixed(2)}B`} />
         <KpiMini
           label="Remaining"
-          value={`$${(d.atm_remaining / 1e9).toFixed(2)}B`}
-          badge={d.atm_remaining < 200_000_000 ? "red" : d.atm_remaining < 500_000_000 ? "amber" : undefined}
+          value={`$${((kpi.strc_atm_remaining_usd ?? 0) / 1e9).toFixed(2)}B`}
+          badge={(kpi.strc_atm_remaining_usd ?? 0) < 200_000_000 ? "red" : (kpi.strc_atm_remaining_usd ?? 0) < 500_000_000 ? "amber" : undefined}
         />
-        <KpiMini label="90d Pace" value={`$${(d.atm_pace_90d_monthly / 1e6).toFixed(0)}M/mo`} />
+        <KpiMini label="90d Pace" value={`$${((kpi.strc_atm_pace_90d_monthly_usd ?? 0) / 1e6).toFixed(0)}M/mo`} />
       </div>
 
       {/* Chart + Event Log */}
@@ -77,11 +77,9 @@ export default function VolumeATMTracker() {
         {/* Simple volume bar chart using CSS */}
         <div style={{ height: 240, position: "relative", overflow: "hidden" }}>
           <div style={{ display: "flex", alignItems: "flex-end", height: "100%", gap: 1 }}>
-            {filteredVolume.map((v: { date: string; volume: number; avg_20d: number; vol_ratio: number; has_atm_event: boolean; atm_proceeds_m?: number }) => {
-              const maxVol = Math.max(...filteredVolume.map((x: { volume: number }) => x.volume));
-              const hPct = maxVol > 0 ? (v.volume / maxVol) * 100 : 0;
-              const isHighVol = v.vol_ratio >= 2 && !v.has_atm_event;
-              const isAnomalous = v.vol_ratio >= 3 && !v.has_atm_event;
+            {filteredVolume.map((v: { date: string; strc_volume: number; strc_price: number; mstr_volume: number }) => {
+              const maxVol = Math.max(...filteredVolume.map((x: { strc_volume: number }) => x.strc_volume));
+              const hPct = maxVol > 0 ? (v.strc_volume / maxVol) * 100 : 0;
               return (
                 <div
                   key={v.date}
@@ -89,13 +87,12 @@ export default function VolumeATMTracker() {
                     flex: 1,
                     minWidth: 1,
                     height: `${hPct}%`,
-                    background: v.has_atm_event ? "var(--btc)" : "var(--accent)",
+                    background: "var(--accent)",
                     opacity: 0.8,
                     borderRadius: "2px 2px 0 0",
-                    border: isAnomalous ? "1px solid var(--red)" : isHighVol ? "1px solid var(--amber)" : "none",
                     position: "relative",
                   }}
-                  title={`${v.date}: ${v.volume.toLocaleString()} shares${v.has_atm_event ? ` | ATM: $${v.atm_proceeds_m}M` : ""}`}
+                  title={`${v.date}: ${v.strc_volume.toLocaleString()} shares`}
                 />
               );
             })}
@@ -109,18 +106,18 @@ export default function VolumeATMTracker() {
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)" }}>ATM Events</span>
-            <Badge variant="neutral">{(d.atm_events ?? []).length}</Badge>
+            <Badge variant="neutral">{(data.atm_events ?? []).length}</Badge>
           </div>
           <div style={{ maxHeight: 200, overflowY: "auto" }}>
-            {(d.atm_events ?? []).slice().reverse().map((evt: { date: string; proceeds_usd: number; shares_issued: number; issue_price: number; is_confirmed: boolean }, i: number) => (
+            {(data.atm_events ?? []).slice().reverse().map((evt: { date: string; proceeds_usd: number; shares_issued: number; avg_price: number; is_estimated: boolean }, i: number) => (
               <div key={i} style={{ display: "flex", gap: 8, padding: "4px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)" }}>
                 <span style={{ color: "var(--t3)", minWidth: 60 }}>{evt.date}</span>
                 <span className="mono" style={{ color: "var(--btc-d)", fontWeight: 600 }}>${(evt.proceeds_usd / 1e6).toFixed(0)}M</span>
                 <span className="mono" style={{ color: "var(--t2)" }}>{(evt.shares_issued / 1e6).toFixed(1)}M sh</span>
-                {!evt.is_confirmed && <Badge variant="amber">Est.</Badge>}
+                {evt.is_estimated && <Badge variant="amber">Est.</Badge>}
               </div>
             ))}
-            {(d.atm_events ?? []).length === 0 && (
+            {(data.atm_events ?? []).length === 0 && (
               <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", padding: "8px 0" }}>No ATM events recorded</div>
             )}
           </div>

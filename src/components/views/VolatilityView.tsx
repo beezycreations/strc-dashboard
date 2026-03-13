@@ -33,7 +33,7 @@ export default function VolatilityView() {
             </tr>
           </thead>
           <tbody>
-            {instruments.map((inst: { ticker: string; vol_30d: number; vol_90d: number; vol_ratio: number; iv_30d: number | null; iv_60d: number | null; beta_btc_30d: number | null; beta_mstr_30d: number | null; signal: string }) => {
+            {instruments.map((inst: { ticker: string; vol_30d: number; vol_90d: number; vol_ratio: number; iv: number | null; beta_btc_30d: number | null; beta_mstr_30d: number | null; signal: string }) => {
               const isSpy = inst.ticker === "SPY";
               return (
                 <tr key={inst.ticker} style={{ borderBottom: "1px solid var(--border)", opacity: isSpy ? 0.6 : 1 }}>
@@ -52,8 +52,7 @@ export default function VolatilityView() {
                     </span>
                   </td>
                   <td className="mono" style={{ padding: "8px 10px", color: "var(--violet)" }}>
-                    {inst.iv_30d != null ? fmtPct(inst.iv_30d) : "—"}
-                    {inst.iv_60d != null && <span style={{ color: "var(--t3)", marginLeft: 4, fontSize: "var(--text-xs)" }}>/ {fmtPct(inst.iv_60d)}</span>}
+                    {inst.iv != null ? fmtPct(inst.iv) : "—"}
                   </td>
                   <td className="mono" style={{ padding: "8px 10px" }}>{inst.beta_btc_30d != null ? inst.beta_btc_30d.toFixed(2) : "—"}</td>
                   <td className="mono" style={{ padding: "8px 10px" }}>{inst.beta_mstr_30d != null ? inst.beta_mstr_30d.toFixed(2) : "—"}</td>
@@ -81,8 +80,8 @@ export default function VolatilityView() {
                   <XAxis dataKey="date" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: string) => v.slice(5)} interval="preserveStartEnd" />
                   <YAxis domain={[-0.5, 1]} tick={{ fontSize: 10, fill: colors.t3 }} />
                   <Tooltip contentStyle={rechartsDefaults.tooltipStyle} />
-                  <Line type="monotone" dataKey="strc_mstr_30d" name="STRC-MSTR" stroke={colors.accent} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="strc_btc_30d" name="STRC-BTC" stroke={colors.btc} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="strc_mstr" name="STRC-MSTR" stroke={colors.accent} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="strc_btc" name="STRC-BTC" stroke={colors.btc} strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
