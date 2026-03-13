@@ -63,56 +63,58 @@ export default function VolumeATMTracker() {
     return (data.volume_history as VolumeDay[]).filter((v) => v.date >= cutoffStr);
   }, [data?.volume_history, range]);
 
-  // Build ATM event lookup by date
-  const atmEventMap = useMemo(() => {
+  // Build ATM event lookup by date and identify confirmed date ranges
+  const { atmEventMap, confirmedRanges } = useMemo(() => {
     const map = new Map<string, AtmEvent>();
-    for (const evt of (data?.atm_events ?? []) as AtmEvent[]) {
+    const events = (data?.atm_events ?? []) as AtmEvent[];
+    for (const evt of events) {
       map.set(evt.date, evt);
     }
-    return map;
+
+    // Build confirmed 8-K date ranges.
+    // Each confirmed event is assumed to cover the period from the previous
+    // confirmed event's date (exclusive) to its own date (inclusive).
+    // Within that range, prior estimates/inferred values get replaced and
+    // the confirmed total is allocated proportionally by daily volume.
+    const confirmed = events
+      .filter((e) => !e.is_estimated)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const ranges: Array<{ start: string; end: string; proceeds_usd: number; shares_issued: number }> = [];
+    for (let i = 0; i < confirmed.length; i++) {
+      const prev = i > 0 ? confirmed[i - 1].date : null;
+      ranges.push({
+        start: prev ?? confirmed[i].date, // first confirmed event covers just its own day
+        end: confirmed[i].date,
+        proceeds_usd: confirmed[i].proceeds_usd,
+        shares_issued: confirmed[i].shares_issued,
+      });
+    }
+
+    return { atmEventMap: map, confirmedRanges: ranges };
   }, [data?.atm_events]);
 
-  // Compute 20d moving average for volume-based ATM estimation
+  // Compute chart data with 8-K reconciliation
   const chartData = useMemo(() => {
     const allVolume = (data?.volume_history ?? []) as VolumeDay[];
-    const volByDate = new Map<string, number>();
-    allVolume.forEach((v) => volByDate.set(v.date, v.strc_volume));
 
-    return filteredVolume.map((v, idx) => {
-      // Calculate 20d avg from full history up to this point
+    // Step 1: Build raw daily estimates for every day
+    const rawDays = filteredVolume.map((v) => {
       const fullIdx = allVolume.findIndex((x) => x.date === v.date);
       const lookback = allVolume.slice(Math.max(0, fullIdx - 19), fullIdx + 1);
       const avg20d = lookback.length > 0
         ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
         : v.strc_volume;
 
-      // Check if there's a confirmed/estimated ATM event from the API
+      // Check for a pre-existing estimated event from the API
       const atmEvent = atmEventMap.get(v.date);
 
-      // Daily ATM estimation logic:
-      // - If confirmed/estimated event exists from API, use that
-      // - Otherwise, estimate daily issuance using participation rate × volume
-      //   (Strategy issues shares most trading days via continuous ATM programs)
-      // - Higher confidence on spike days (volume > 1.5× avg)
-      let atm_proceeds = 0;
-      let atm_btc = 0;
-      let atm_source: "confirmed" | "estimated" | "inferred" | null = null;
-
-      if (atmEvent) {
-        atm_proceeds = atmEvent.proceeds_usd;
-        atm_btc = atm_proceeds / btcPrice;
-        atm_source = atmEvent.is_estimated ? "estimated" : "confirmed";
-      } else {
-        // Estimate daily ATM issuance from volume × participation rate
-        const isHighConfidence = v.strc_volume > avg20d * HIGH_CONFIDENCE_THRESHOLD;
-        const effectiveRate = isHighConfidence
-          ? participationRate * HIGH_CONFIDENCE_MULTIPLIER
-          : participationRate;
-        const estimatedShares = v.strc_volume * effectiveRate;
-        atm_proceeds = estimatedShares * v.strc_price;
-        atm_btc = atm_proceeds / btcPrice;
-        atm_source = "inferred";
-      }
+      // Default: estimate from volume × participation rate
+      const isHighConfidence = v.strc_volume > avg20d * HIGH_CONFIDENCE_THRESHOLD;
+      const effectiveRate = isHighConfidence
+        ? participationRate * HIGH_CONFIDENCE_MULTIPLIER
+        : participationRate;
+      const inferredProceeds = v.strc_volume * effectiveRate * v.strc_price;
 
       return {
         date: v.date,
@@ -120,13 +122,54 @@ export default function VolumeATMTracker() {
         mstr_volume: v.mstr_volume,
         strc_price: v.strc_price,
         avg_20d: Math.round(avg20d),
-        atm_proceeds_confirmed: atm_source === "confirmed" ? atm_proceeds / 1e6 : 0,
-        atm_proceeds_estimated: atm_source === "estimated" || atm_source === "inferred" ? atm_proceeds / 1e6 : 0,
-        atm_btc: atm_btc > 0 ? atm_btc : 0,
-        atm_source,
+        // These will be overwritten by reconciliation if within a confirmed range
+        atm_proceeds: atmEvent ? atmEvent.proceeds_usd : inferredProceeds,
+        atm_source: atmEvent
+          ? (atmEvent.is_estimated ? "estimated" as const : "confirmed" as const)
+          : "inferred" as const,
       };
     });
-  }, [filteredVolume, atmEventMap, data?.volume_history, participationRate, btcPrice]);
+
+    // Step 2: Reconcile — for each confirmed 8-K range, override daily estimates
+    // so they sum to the confirmed total, allocated by volume weight.
+    for (const range of confirmedRanges) {
+      const daysInRange = rawDays.filter(
+        (d) => d.date > range.start && d.date <= range.end
+      );
+      // If the range start === end (single-day confirmation), include that day
+      if (range.start === range.end) {
+        const singleDay = rawDays.find((d) => d.date === range.end);
+        if (singleDay && !daysInRange.includes(singleDay)) {
+          daysInRange.push(singleDay);
+        }
+      }
+
+      if (daysInRange.length === 0) continue;
+
+      const totalVolume = daysInRange.reduce((s, d) => s + d.strc_volume, 0);
+      if (totalVolume === 0) continue;
+
+      // Allocate confirmed proceeds proportionally by daily volume
+      for (const day of daysInRange) {
+        const weight = day.strc_volume / totalVolume;
+        day.atm_proceeds = range.proceeds_usd * weight;
+        day.atm_source = "confirmed";
+      }
+    }
+
+    // Step 3: Compute final fields
+    return rawDays.map((d) => ({
+      date: d.date,
+      strc_volume: d.strc_volume,
+      mstr_volume: d.mstr_volume,
+      strc_price: d.strc_price,
+      avg_20d: d.avg_20d,
+      atm_proceeds_confirmed: d.atm_source === "confirmed" ? d.atm_proceeds / 1e6 : 0,
+      atm_proceeds_estimated: d.atm_source !== "confirmed" ? d.atm_proceeds / 1e6 : 0,
+      atm_btc: d.atm_proceeds / btcPrice,
+      atm_source: d.atm_source,
+    }));
+  }, [filteredVolume, atmEventMap, confirmedRanges, data?.volume_history, participationRate, btcPrice]);
 
   // Tick interval for X-axis
   const tickInterval = Math.max(1, Math.floor(chartData.length / 10));
@@ -412,11 +455,18 @@ export default function VolumeATMTracker() {
               within 1–2 trading days, consistent with their disclosed purchasing cadence.
             </p>
 
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>8-K reconciliation</strong>: When a confirmed 8-K filing is received, it overrides all
+              prior daily estimates within its coverage period. The confirmed total proceeds are re-allocated across the trading days
+              in that range proportionally by each day&apos;s STRC volume. This ensures the chart always ties back to actuals once official
+              data is available, while preserving a realistic daily breakdown based on volume patterns.
+            </p>
+
             <p style={{ margin: 0 }}>
               <strong style={{ color: "var(--t2)" }}>Limitations</strong>: Estimates may overstate issuance on high-volume days driven by
-              market events (earnings, index rebalancing) rather than ATM activity. Estimates are retroactively replaced with confirmed
-              figures when the corresponding 8-K is filed. Inferred events (where no confirmed or estimated event exists but volume
-              patterns suggest activity) carry the highest uncertainty.
+              market events (earnings, index rebalancing) rather than ATM activity. Inferred events carry the highest uncertainty.
+              All estimates are provisional and will be replaced by confirmed figures as 8-K filings are processed (typically 2–5
+              business days after issuance).
             </p>
           </div>
         )}
