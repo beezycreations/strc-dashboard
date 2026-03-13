@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/prices",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/daily-metrics",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/sofr",
+      "schedule": "0 16 * * 1-5"
+    },
+    {
+      "path": "/api/cron/edgar-check",
+      "schedule": "0 * * * *"
+    }
+  ]
+}

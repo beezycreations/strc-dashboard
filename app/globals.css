@@ -1,0 +1,42 @@
+@import "tailwindcss";
+@import "../src/styles/tokens.css";
+
+@theme inline {
+  /* Map design tokens to Tailwind theme */
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+
+  --color-accent: var(--accent);
+  --color-accent-l: var(--accent-l);
+  --color-btc: var(--btc);
+  --color-btc-l: var(--btc-l);
+  --color-btc-d: var(--btc-d);
+  --color-signal-green: var(--green);
+  --color-signal-green-l: var(--green-l);
+  --color-signal-red: var(--red);
+  --color-signal-red-l: var(--red-l);
+  --color-signal-amber: var(--amber);
+  --color-signal-amber-l: var(--amber-l);
+  --color-violet: var(--violet);
+  --color-violet-l: var(--violet-l);
+
+  --font-ui: var(--font-ui);
+  --font-num: var(--font-num);
+
+  --radius-card: var(--r);
+  --radius-sm: var(--r-sm);
+  --radius-xs: var(--r-xs);
+
+  --shadow-card: var(--shadow);
+  --shadow-card-md: var(--shadow-md);
+
+  --spacing-card-pad: var(--card-pad);
+  --spacing-card-gap: var(--card-gap);
+  --spacing-page-pad: var(--page-pad);
+  --spacing-page-pad-m: var(--page-pad-m);
+}
