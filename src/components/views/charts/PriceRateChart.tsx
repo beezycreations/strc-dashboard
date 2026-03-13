@@ -3,10 +3,10 @@
 import {
   ComposedChart,
   Line,
-  Bar,
   XAxis,
   YAxis,
   Tooltip,
+  Legend,
   ResponsiveContainer,
   CartesianGrid,
   ReferenceLine,
@@ -48,6 +48,9 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
     return nextDay.getMonth() !== d.getMonth();
   };
 
+  // Show ~12 evenly spaced tick labels to avoid crowding
+  const tickInterval = Math.max(1, Math.floor(chartData.length / 12));
+
   return (
     <ResponsiveContainer width="100%" height="100%">
       <ComposedChart data={chartData} margin={{ top: 5, right: 50, bottom: 5, left: 5 }}>
@@ -55,8 +58,11 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
         <XAxis
           dataKey="date"
           tick={{ fontSize: 10, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
-          tickFormatter={(v: string) => v.slice(5)}
-          interval="preserveStartEnd"
+          tickFormatter={(v: string) => {
+            const d = new Date(v + "T00:00:00");
+            return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          }}
+          interval={tickInterval}
         />
         <YAxis
           yAxisId="price"
@@ -81,6 +87,17 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
             return [`${v}`, String(name)];
           }}
         />
+        <Legend
+          verticalAlign="top"
+          align="right"
+          wrapperStyle={{ fontSize: 11, fontFamily: rechartsDefaults.fontFamily, paddingBottom: 8 }}
+          formatter={(value: string) => {
+            if (value === "strc") return "STRC Price";
+            if (value === "rate_pct") return "STRC Rate";
+            if (value === "sofr_pct") return "SOFR 1M";
+            return value;
+          }}
+        />
         {/* Par reference line */}
         <ReferenceLine yAxisId="price" y={100} stroke={colors.t3} strokeDasharray="4 4" />
         {/* Dividend date markers */}
@@ -91,8 +108,8 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
           ))}
         {/* STRC Price line */}
         <Line yAxisId="price" type="monotone" dataKey="strc" stroke={colors.accent} strokeWidth={2} dot={false} />
-        {/* Rate bars */}
-        <Bar yAxisId="rate" dataKey="rate_pct" fill={colors.violet} opacity={0.6} barSize={4} />
+        {/* STRC Rate line (was Bar) */}
+        <Line yAxisId="rate" type="stepAfter" dataKey="rate_pct" stroke={colors.violet} strokeWidth={2} dot={false} />
         {/* SOFR line */}
         <Line yAxisId="rate" type="stepAfter" dataKey="sofr_pct" stroke={colors.accent} strokeDasharray="4 4" strokeWidth={1.5} dot={false} />
       </ComposedChart>
