@@ -272,6 +272,30 @@ export const atmCalibrationParams = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// mstr_btc_purchases — Strategy's confirmed BTC acquisitions from 8-K filings
+// ---------------------------------------------------------------------------
+export const mstrBtcPurchases = pgTable(
+  "mstr_btc_purchases",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    purchaseNumber: integer("purchase_number").notNull(),
+    reportDate: date("report_date").notNull(),
+    btcAcquired: integer("btc_acquired").notNull(),
+    avgBtcCost: numeric("avg_btc_cost", { precision: 18, scale: 2 }).notNull(),
+    acquisitionCostUsd: numeric("acquisition_cost_usd", { precision: 20, scale: 2 }).notNull(),
+    cumulativeBtc: integer("cumulative_btc").notNull(),
+    adsoThousands: integer("adso_thousands"),
+    source: varchar({ length: 200 }).default("8-K"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    unique("uq_mstr_btc_purchases_number").on(t.purchaseNumber),
+    unique("uq_mstr_btc_purchases_date").on(t.reportDate),
+    index("idx_mstr_btc_purchases_date").on(t.reportDate),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // accrued_dividends
 // ---------------------------------------------------------------------------
 export const accruedDividends = pgTable(

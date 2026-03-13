@@ -37,3 +37,9 @@ export function useVolumeAtm() {
     revalidateOnFocus: false,
   });
 }
+
+export function useMstrMnav() {
+  return useSWR("/api/data/mstr-mnav", fetcher, {
+    revalidateOnFocus: false,
+  });
+}

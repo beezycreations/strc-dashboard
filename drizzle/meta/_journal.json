@@ -8,6 +8,13 @@
       "when": 1773428331679,
       "tag": "0000_mighty_felicia_hardy",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1741900000000,
+      "tag": "0001_add_mstr_btc_purchases",
+      "breakpoints": true
     }
   ]
 }

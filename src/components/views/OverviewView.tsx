@@ -5,6 +5,7 @@ import { KpiCard, StatRow, CapitalStackBar, CountdownChip, ProgressBar } from "@
 import Badge from "@/src/components/ui/Badge";
 import { fmtPct, fmtBps, fmtMultiple } from "@/src/lib/utils/format";
 import PriceRateChart from "./charts/PriceRateChart";
+import MstrMnavChart from "./charts/MstrMnavChart";
 import BtcPurchaseChart from "./charts/BtcPurchaseChart";
 import VolumeATMTracker from "./VolumeATMTracker";
 
@@ -119,6 +120,11 @@ export default function OverviewView() {
             highlightTicker="STRC"
           />
         </div>
+      </div>
+
+      {/* MSTR Historical mNAV Chart */}
+      <div className="card">
+        <MstrMnavChart />
       </div>
 
       {/* Flywheel metrics row */}
