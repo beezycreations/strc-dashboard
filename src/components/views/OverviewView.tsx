@@ -5,6 +5,7 @@ import { KpiCard, StatRow, CapitalStackBar, CountdownChip, ProgressBar } from "@
 import Badge from "@/src/components/ui/Badge";
 import { fmtPct, fmtBps, fmtMultiple, fmtMonths } from "@/src/lib/utils/format";
 import PriceRateChart from "./charts/PriceRateChart";
+import BtcPurchaseChart from "./charts/BtcPurchaseChart";
 import VolumeATMTracker from "./VolumeATMTracker";
 
 export default function OverviewView() {
@@ -119,6 +120,9 @@ export default function OverviewView() {
           <div className="mono" style={{ fontSize: "var(--text-xl)", fontWeight: 600 }}>${s.mnav_breakeven_btc.toLocaleString()}</div>
         </div>
       </div>
+
+      {/* MSTR Bitcoin Purchases */}
+      <BtcPurchaseChart />
 
       {/* Volume + ATM Issuance Tracker */}
       <VolumeATMTracker />
