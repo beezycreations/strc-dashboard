@@ -3,6 +3,9 @@
 import { useState, useMemo } from "react";
 import { useVolumeAtm, useSnapshot } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
+import BacktestResults from "@/src/components/ui/BacktestResults";
+import { buildAtmIssuanceBacktest, optimizeBacktestParams, type OptimizedParams } from "@/src/lib/calculators/backtest";
+import { CONFIRMED_STRC_ATM_EVENTS } from "@/src/lib/data/confirmed-strc-atm";
 import {
   ComposedChart,
   Line,
@@ -31,13 +34,18 @@ interface AtmEvent {
   is_estimated: boolean;
 }
 
-// Default participation rate and BTC price for estimation
-const DEFAULT_PARTICIPATION_RATE = 0.032;
-// ATM issuance is nearly continuous for STRC — Strategy issues most trading days.
-// Base estimation applies participation rate to ALL volume.
-// High-confidence days (volume > threshold × avg) get a higher participation rate.
+// Default participation rate — used as fallback when optimizer hasn't run.
+// Optimization showed 3.0% yields the highest confidence against confirmed 8-K data.
+const DEFAULT_PARTICIPATION_RATE = 0.030;
 const HIGH_CONFIDENCE_THRESHOLD = 1.5;
-const HIGH_CONFIDENCE_MULTIPLIER = 1.5; // participation rate × 1.5 on spike days
+const HIGH_CONFIDENCE_MULTIPLIER = 1.5;
+
+// Grid search dimensions (for methodology display)
+const ATM_EVENT_COUNT = CONFIRMED_STRC_ATM_EVENTS.length;
+const RATE_GRID_SIZE = 10;
+const THRESHOLD_GRID_SIZE = 4;
+const MULTIPLIER_GRID_SIZE = 5;
+const CONVERSION_GRID_SIZE = 4;
 
 export default function VolumeATMTracker() {
   const { data, isLoading } = useVolumeAtm();
@@ -46,8 +54,69 @@ export default function VolumeATMTracker() {
   const [showMethodology, setShowMethodology] = useState(false);
 
   const kpi = data?.kpi ?? {};
-  const participationRate = kpi.participation_rate_current ?? DEFAULT_PARTICIPATION_RATE;
+  const baseParticipationRate = kpi.participation_rate_current ?? DEFAULT_PARTICIPATION_RATE;
   const btcPrice = snap?.btc_price ?? 70000;
+
+  // AUTO-OPTIMIZING BACKTEST: Grid-searches participation rate, high-volume
+  // threshold/multiplier, and conversion rate to find the parameter set that
+  // maximizes confidence against confirmed 8-K data. Automatically recalibrates
+  // whenever new 8-K data is added to confirmed-strc-atm.ts.
+  const { atmBacktest, participationRate, optimizedParams } = useMemo(() => {
+    const allVolume = (data?.volume_history ?? []) as VolumeDay[];
+
+    // Primary: auto-optimize against real confirmed 8-K data
+    const optimized = optimizeBacktestParams(allVolume);
+
+    if (optimized.params.atm_confidence > 0) {
+      return {
+        atmBacktest: optimized.atmSummary,
+        participationRate: optimized.params.participation_rate,
+        optimizedParams: optimized.params,
+      };
+    }
+
+    // Fallback: use mock ATM events from API for dev/demo mode
+    const events = (data?.atm_events ?? []) as AtmEvent[];
+    const confirmed = events
+      .filter((e) => !e.is_estimated)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    let backtest = buildAtmIssuanceBacktest([]);
+    if (confirmed.length >= 3) {
+      const backtestPairs = confirmed.map((evt, idx) => {
+        const periodStart = idx > 0
+          ? confirmed[idx - 1].date
+          : allVolume.length > 0 ? allVolume[0].date : evt.date;
+        const periodVolume = allVolume.filter(
+          (v) => v.date > periodStart && v.date <= evt.date
+        );
+        let totalEstProceeds = 0;
+        for (const vol of periodVolume) {
+          const fullIdx = allVolume.indexOf(vol);
+          const lookback = allVolume.slice(Math.max(0, fullIdx - 19), fullIdx + 1);
+          const avg20d = lookback.length > 0
+            ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
+            : vol.strc_volume;
+          const isHigh = vol.strc_volume > avg20d * HIGH_CONFIDENCE_THRESHOLD;
+          const rate = isHigh ? baseParticipationRate * HIGH_CONFIDENCE_MULTIPLIER : baseParticipationRate;
+          totalEstProceeds += vol.strc_volume * rate * vol.strc_price;
+        }
+        return { date: evt.date, actual_proceeds: evt.proceeds_usd, estimated_proceeds: totalEstProceeds };
+      });
+      backtest = buildAtmIssuanceBacktest(backtestPairs);
+    }
+
+    let correctedRate = baseParticipationRate;
+    if (backtest.calibrated_rate && backtest.calibrated_rate > 0) {
+      correctedRate = baseParticipationRate / backtest.calibrated_rate;
+    }
+
+    return {
+      atmBacktest: backtest,
+      participationRate: correctedRate,
+      optimizedParams: null as OptimizedParams | null,
+    };
+  }, [data?.atm_events, data?.volume_history, baseParticipationRate]);
 
   // Filter volume history by range
   const filteredVolume: VolumeDay[] = useMemo(() => {
@@ -445,11 +514,29 @@ export default function VolumeATMTracker() {
               Strategy typically files 8-Ks within 2–5 business days of issuance.
             </p>
 
+            {optimizedParams && (
+              <div style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, border: "1px solid var(--border)" }}>
+                <div style={{ fontWeight: 600, color: "var(--t2)", marginBottom: 6 }}>Auto-Optimized Parameters</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "4px 12px", fontSize: "var(--text-xs)" }}>
+                  <span>Participation Rate: <strong className="mono">{(optimizedParams.participation_rate * 100).toFixed(1)}%</strong></span>
+                  <span>High-Vol Threshold: <strong className="mono">{optimizedParams.high_conf_threshold}×</strong></span>
+                  <span>High-Vol Multiplier: <strong className="mono">{optimizedParams.high_conf_multiplier}×</strong></span>
+                  <span>BTC Conversion: <strong className="mono">{(optimizedParams.conversion_rate * 100).toFixed(0)}%</strong></span>
+                  <span>ATM Confidence: <strong className="mono">{optimizedParams.atm_confidence}%</strong></span>
+                  <span>BTC Confidence: <strong className="mono">{optimizedParams.btc_confidence}%</strong></span>
+                </div>
+                <div style={{ marginTop: 6, fontSize: "var(--text-xs)", color: "var(--t3)" }}>
+                  Parameters auto-calibrated by grid search across {CONFIRMED_STRC_ATM_EVENTS.length} confirmed 8-K filings.
+                  Recalibrates automatically when new 8-K data is added.
+                </div>
+              </div>
+            )}
+
             <p style={{ marginBottom: 10 }}>
               <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (<Badge variant="amber">Est.</Badge>): Strategy&apos;s ATM programs operate
               near-continuously — shares are issued on most trading days, not just during volume spikes. We estimate daily issuance
-              by applying a calibrated participation rate to total daily volume. On high-volume days (exceeding {HIGH_CONFIDENCE_THRESHOLD}× the
-              20-day average), the participation rate is scaled up by {HIGH_CONFIDENCE_MULTIPLIER}× to reflect that elevated volume often
+              by applying an auto-optimized participation rate to total daily volume. On high-volume days (exceeding {optimizedParams?.high_conf_threshold ?? HIGH_CONFIDENCE_THRESHOLD}× the
+              20-day average), the participation rate is scaled up by {optimizedParams?.high_conf_multiplier ?? HIGH_CONFIDENCE_MULTIPLIER}× to reflect that elevated volume often
               correlates with more aggressive issuance.
             </p>
 
@@ -457,23 +544,32 @@ export default function VolumeATMTracker() {
               <strong style={{ color: "var(--t2)" }}>Estimation formula</strong>:
             </p>
             <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
-              <div>effective_rate = participation_rate × (1.5 if volume &gt; 1.5× 20d_avg, else 1.0)</div>
+              <div>effective_rate = {(participationRate * 100).toFixed(1)}% × ({optimizedParams?.high_conf_multiplier ?? HIGH_CONFIDENCE_MULTIPLIER}× if volume &gt; {optimizedParams?.high_conf_threshold ?? HIGH_CONFIDENCE_THRESHOLD}× 20d_avg, else 1.0)</div>
               <div>est_shares = daily_volume × effective_rate</div>
               <div>est_proceeds = est_shares × VWAP</div>
-              <div>est_btc_purchased = est_proceeds ÷ btc_price</div>
+              <div>est_btc_purchased = est_proceeds × {((optimizedParams?.conversion_rate ?? 0.95) * 100).toFixed(0)}% ÷ btc_price</div>
             </div>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Participation rate</strong>: Currently calibrated
-              at {(participationRate * 100).toFixed(1)}% (historical
-              range: {((kpi.participation_rate_range?.[0] ?? 0.018) * 100).toFixed(1)}%–{((kpi.participation_rate_range?.[1] ?? 0.045) * 100).toFixed(1)}%).
-              The rate is recalibrated periodically as new 8-K filings provide ground-truth data points.
+              <strong style={{ color: "var(--t2)" }}>Self-optimizing model</strong>: All parameters are automatically calibrated by
+              grid-searching across {ATM_EVENT_COUNT} confirmed 8-K filings from SEC EDGAR. The optimizer tests {RATE_GRID_SIZE} participation
+              rates × {THRESHOLD_GRID_SIZE} thresholds × {MULTIPLIER_GRID_SIZE} multipliers × {CONVERSION_GRID_SIZE} conversion rates and selects the combination
+              that maximizes a combined ATM + BTC confidence score. When a new 8-K is filed, adding it
+              to the confirmed data automatically triggers recalibration — no manual tuning required.
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>BTC purchase estimation</strong>: ATM proceeds (confirmed or estimated) are divided
-              by the day&apos;s BTC closing price to derive estimated BTC acquired. This assumes Strategy deploys ATM proceeds to BTC
-              within 1–2 trading days, consistent with their disclosed purchasing cadence.
+              <strong style={{ color: "var(--t2)" }}>Recency-weighted scoring</strong>: Recent 8-K periods carry exponentially more weight
+              (decay factor 0.60). The 3 most recent periods contribute ~75% of the confidence score.
+              This adapts the model to Strategy&apos;s evolving ATM structure (e.g., dual-agent issuance,
+              extended trading hours) rather than anchoring to outdated patterns.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Downstream impact</strong>: ATM issuance estimation is the <em>root</em> of the
+              estimation flywheel. ATM proceeds feed into BTC purchase estimates, which feed into estimated
+              BTC holdings, which feed into mNAV and all downstream metrics. ATM confidence ({atmBacktest.confidence_score}%)
+              caps the confidence of every downstream estimate.
             </p>
 
             <p style={{ marginBottom: 10 }}>
@@ -483,11 +579,12 @@ export default function VolumeATMTracker() {
               data is available, while preserving a realistic daily breakdown based on volume patterns.
             </p>
 
-            <p style={{ margin: 0 }}>
+            <BacktestResults summary={atmBacktest} label="ATM Issuance" />
+
+            <p style={{ margin: 0, marginTop: 10 }}>
               <strong style={{ color: "var(--t2)" }}>Limitations</strong>: Estimates may overstate issuance on high-volume days driven by
-              market events (earnings, index rebalancing) rather than ATM activity. Inferred events carry the highest uncertainty.
-              All estimates are provisional and will be replaced by confirmed figures as 8-K filings are processed (typically 2–5
-              business days after issuance).
+              market events (earnings, index rebalancing) rather than ATM activity. All estimates are provisional
+              and will be replaced by confirmed figures as 8-K filings are processed (typically 2–5 business days after issuance).
             </p>
           </div>
         )}

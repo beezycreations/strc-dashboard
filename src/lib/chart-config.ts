@@ -5,6 +5,9 @@
  * Shared defaults for Recharts and Chart.js charts.
  */
 
+/* ── STRC constants ── */
+export const STRC_IPO_DATE = "2025-07-29";
+
 /* ── Color tokens (duplicated from CSS for JS access) ── */
 export const colors = {
   accent:   "#0052FF",

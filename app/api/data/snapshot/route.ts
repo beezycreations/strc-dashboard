@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { desc } from "drizzle-orm";
 import { isMarketOpen, daysToMonthEnd } from "@/src/lib/utils/market-hours";
+import { LATEST_CONFIRMED_BTC, LATEST_CONFIRMED_DATE } from "@/src/lib/data/confirmed-purchases";
 
 export const revalidate = 0;
 
@@ -10,8 +11,14 @@ interface LivePrices {
   btc_price: number | null;
   btc_24h_pct: number | null;
   strc_price: number | null;
+  strc_volume: number | null;
+  strc_market_cap: number | null;
+  strc_shares_outstanding: number | null;
+  strc_price_avg_50: number | null;
   mstr_price: number | null;
+  mstr_change_pct: number | null;
   mstr_shares_outstanding: number | null;
+  quote_timestamp: number | null;
 }
 
 async function fetchLivePrices(): Promise<LivePrices> {
@@ -19,8 +26,14 @@ async function fetchLivePrices(): Promise<LivePrices> {
     btc_price: null,
     btc_24h_pct: null,
     strc_price: null,
+    strc_volume: null,
+    strc_market_cap: null,
+    strc_shares_outstanding: null,
+    strc_price_avg_50: null,
     mstr_price: null,
+    mstr_change_pct: null,
     mstr_shares_outstanding: null,
+    quote_timestamp: null,
   };
 
   // Fetch BTC from CoinGecko (no API key needed)
@@ -39,26 +52,45 @@ async function fetchLivePrices(): Promise<LivePrices> {
     })
     .catch(() => {});
 
-  // Fetch STRC + MSTR from FMP full quote (includes sharesOutstanding)
+  // Fetch STRC + MSTR from FMP stable API (quote + profile for shares outstanding)
   const fmpKey = process.env.FMP_API_KEY;
+  const fmpBase = "https://financialmodelingprep.com/stable";
   const fmpPromise = fmpKey
-    ? fetch(
-        `https://financialmodelingprep.com/api/v3/quote/STRC,MSTR?apikey=${fmpKey}`,
-        { next: { revalidate: 30 } }
-      )
-        .then((r) => r.json())
-        .then((data: Array<{ symbol: string; price: number; sharesOutstanding?: number }>) => {
-          if (Array.isArray(data)) {
-            for (const q of data) {
-              if (q.symbol === "STRC") result.strc_price = q.price;
-              if (q.symbol === "MSTR") {
-                result.mstr_price = q.price;
-                result.mstr_shares_outstanding = q.sharesOutstanding ?? null;
-              }
+    ? Promise.all([
+        fetch(`${fmpBase}/quote?symbol=STRC&apikey=${fmpKey}`, { next: { revalidate: 30 } })
+          .then((r) => r.json())
+          .then((data: Array<{ symbol: string; price: number; volume?: number; marketCap?: number; priceAvg50?: number; timestamp?: number }>) => {
+            const q = Array.isArray(data) ? data[0] : null;
+            if (q) {
+              result.strc_price = q.price;
+              result.strc_volume = q.volume ?? null;
+              // FMP marketCap for STRC returns MSTR's — ignore it, compute from notional instead
+              result.strc_price_avg_50 = q.priceAvg50 ?? null;
+              result.quote_timestamp = q.timestamp ?? null;
             }
-          }
-        })
-        .catch(() => {})
+          }).catch(() => {}),
+        fetch(`${fmpBase}/quote?symbol=MSTR&apikey=${fmpKey}`, { next: { revalidate: 30 } })
+          .then((r) => r.json())
+          .then((data: Array<{ symbol: string; price: number; change?: number; changePercentage?: number }>) => {
+            const q = Array.isArray(data) ? data[0] : null;
+            if (q) {
+              result.mstr_price = q.price;
+              result.mstr_change_pct = q.changePercentage ?? null;
+            }
+          }).catch(() => {}),
+        fetch(`${fmpBase}/profile?symbol=MSTR&apikey=${fmpKey}`, { next: { revalidate: 300 } })
+          .then((r) => r.json())
+          .then((data: Array<{ sharesOutstanding?: number }>) => {
+            const p = Array.isArray(data) ? data[0] : null;
+            if (p?.sharesOutstanding) result.mstr_shares_outstanding = p.sharesOutstanding;
+          }).catch(() => {}),
+        fetch(`${fmpBase}/profile?symbol=STRC&apikey=${fmpKey}`, { next: { revalidate: 300 } })
+          .then((r) => r.json())
+          .then((data: Array<{ sharesOutstanding?: number }>) => {
+            const p = Array.isArray(data) ? data[0] : null;
+            if (p?.sharesOutstanding) result.strc_shares_outstanding = p.sharesOutstanding;
+          }).catch(() => {}),
+      ]).then(() => {})
     : Promise.resolve();
 
   await Promise.all([btcPromise, fmpPromise]);
@@ -179,14 +211,16 @@ const MOCK_SNAPSHOT = {
   mnav_confidence_high: 1.24,
   btc_price: 70847,
   btc_24h_pct: 2.31,
-  btc_holdings: 738731,
-  btc_nav: 52_300_000_000,
+  btc_holdings: LATEST_CONFIRMED_BTC,
+  btc_holdings_confirmed: LATEST_CONFIRMED_BTC,
+  btc_holdings_confirmed_date: LATEST_CONFIRMED_DATE,
+  btc_nav: LATEST_CONFIRMED_BTC * 70847,
   btc_coverage_ratio: 4.3,
   btc_impairment_price: 16700,
   usd_reserve: 2_250_000_000,
   usd_coverage_months: 30.2,
   total_annual_obligations: 689_000_000,
-  strc_atm_deployed: 3_400_000_000,
+  strc_atm_deployed: 3_842_800_000,
   strc_atm_authorized: 4_200_000_000,
   mstr_atm_deployed_est: 18_000_000_000,
   mstr_atm_authorized: 21_000_000_000,
@@ -209,6 +243,11 @@ const MOCK_SNAPSHOT = {
   atm_deployed_total: 3_400_000_000,
   atm_remaining: 800_000_000,
   atm_pace_90d_monthly: 380_000_000,
+  // New overview cards — null until computed by daily-metrics cron
+  strc_notional: null as number | null,
+  strc_market_cap: null as number | null,
+  strc_1m_vwap: null as number | null,
+  strc_trading_volume_usd: null as number | null,
 };
 
 export async function GET() {
@@ -348,6 +387,21 @@ export async function GET() {
         // Breakeven BTC = EV / btcHoldings (price at which mNAV = 1.0)
         const ev = (adjShares * live.mstr_price) + CONVERT_DEBT_USD + TOTAL_PREF_NOTIONAL - CASH_BALANCE;
         mock.mnav_breakeven_btc = Math.round(ev / mock.btc_holdings);
+      }
+      // Overlay live STRC market data
+      // FMP marketCap for STRC is wrong (returns MSTR's), so compute from notional
+      if (live.strc_shares_outstanding !== null && live.strc_shares_outstanding > 0) {
+        mock.strc_notional = live.strc_shares_outstanding * 100; // par = $100
+      }
+      const strcPriceMock = live.strc_price ?? mock.strc_price;
+      if (mock.strc_notional != null && mock.strc_notional > 0 && strcPriceMock > 0) {
+        mock.strc_market_cap = (mock.strc_notional / 100) * strcPriceMock;
+      }
+      if (live.strc_price_avg_50 !== null) {
+        mock.strc_1m_vwap = live.strc_price_avg_50; // 50d SMA as VWAP proxy
+      }
+      if (live.strc_volume !== null && live.strc_price !== null) {
+        mock.strc_trading_volume_usd = live.strc_volume * live.strc_price;
       }
       return NextResponse.json(mock);
     }
@@ -499,17 +553,44 @@ export async function GET() {
       atm_deployed_total: strcAtmDeployed,
       atm_remaining: atmRemaining,
       atm_pace_90d_monthly: atmPace90dMonthly,
+      // Overview cards
+      // Notional = total face value = shares × $100 par = ATM deployed USD
+      // FMP marketCap for STRC is wrong (returns MSTR's), so compute from notional
+      strc_notional: latestMetrics?.strcNotionalUsd ? parseFloat(latestMetrics.strcNotionalUsd)
+        : (live.strc_shares_outstanding ? live.strc_shares_outstanding * 100
+        : (strcAtmDeployed > 0 ? strcAtmDeployed : null)),
+      strc_market_cap: (() => {
+        // Market cap = shares × current price; shares = notional / $100 par
+        const notional = latestMetrics?.strcNotionalUsd ? parseFloat(latestMetrics.strcNotionalUsd)
+          : (live.strc_shares_outstanding ? live.strc_shares_outstanding * 100
+          : (strcAtmDeployed > 0 ? strcAtmDeployed : null));
+        if (notional != null && finalStrcPrice > 0) return (notional / 100) * finalStrcPrice;
+        return null;
+      })(),
+      strc_1m_vwap: latestMetrics?.strcVwap1m ? parseFloat(latestMetrics.strcVwap1m)
+        : (live.strc_price_avg_50 ?? null),
+      strc_trading_volume_usd: latestMetrics?.strcTradingVolumeUsd ? parseFloat(latestMetrics.strcTradingVolumeUsd)
+        : (live.strc_volume != null && live.strc_price != null ? live.strc_volume * live.strc_price
+        : (volumeToday > 0 ? volumeToday * finalStrcPrice : null)),
+      mstr_price: live.mstr_price,
+      mstr_change_pct: live.mstr_change_pct,
     };
 
     return NextResponse.json(snapshot);
   } catch {
     // DB not configured or connection error — return mock data with live prices
-    const live = await fetchLivePrices().catch(() => ({
+    const live: LivePrices = await fetchLivePrices().catch(() => ({
       btc_price: null,
       btc_24h_pct: null,
       strc_price: null,
+      strc_volume: null,
+      strc_market_cap: null,
+      strc_shares_outstanding: null,
+      strc_price_avg_50: null,
       mstr_price: null,
+      mstr_change_pct: null,
       mstr_shares_outstanding: null,
+      quote_timestamp: null,
     }));
 
     const mock = {
@@ -552,6 +633,27 @@ export async function GET() {
       mock.lp_current = live.strc_price;
       mock.lp_formula_active = live.strc_price >= 100;
     }
+    // Overlay live STRC market data
+    // FMP marketCap for STRC is wrong (returns MSTR's), so compute from notional
+    if (live.strc_shares_outstanding !== null && live.strc_shares_outstanding > 0) {
+      mock.strc_notional = live.strc_shares_outstanding * 100;
+    }
+    // Market cap = (notional / $100 par) × current price
+    const strcPrice = live.strc_price ?? mock.strc_price;
+    const notionalVal = mock.strc_notional ?? mock.strc_atm_deployed;
+    if (notionalVal > 0 && strcPrice > 0) {
+      mock.strc_market_cap = (notionalVal / 100) * strcPrice;
+      if (mock.strc_notional == null) mock.strc_notional = notionalVal;
+    }
+    if (live.strc_price_avg_50 !== null) {
+      mock.strc_1m_vwap = live.strc_price_avg_50;
+    }
+    if (live.strc_volume !== null && live.strc_price !== null) {
+      mock.strc_trading_volume_usd = live.strc_volume * live.strc_price;
+    }
+    // MSTR price data
+    (mock as Record<string, unknown>).mstr_price = live.mstr_price;
+    (mock as Record<string, unknown>).mstr_change_pct = live.mstr_change_pct;
 
     return NextResponse.json(mock);
   }

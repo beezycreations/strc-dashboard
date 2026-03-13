@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useSnapshot, useOptions } from "@/src/lib/hooks/use-api";
-import { KpiCard, StatRow, RiskScoreGauge } from "@/src/components/ui";
+import { KpiCard, RiskScoreGauge } from "@/src/components/ui";
 import SignalPanel, { deriveSignal } from "@/src/components/ui/SignalPanel";
 import Badge from "@/src/components/ui/Badge";
 import { fmtPct, fmtBps } from "@/src/lib/utils/format";
@@ -42,18 +42,76 @@ export default function PositionModesView() {
 
 function LongMode({ snap }: { snap: Record<string, number & string & boolean> }) {
   const s = snap;
+  const [positionSize, setPositionSize] = useState(1_000_000);
   const signal = deriveSignal(s.strc_price, s.btc_coverage_ratio);
-  const monthlyPer1M = (s.strc_rate_pct / 100) * 1_000_000 / 12;
+
+  const annualRate = s.strc_rate_pct / 100;
+  const monthlyIncome = annualRate * positionSize / 12;
+  const yearlyIncome = annualRate * positionSize;
+  const monthsElapsed = new Date().getMonth(); // 0-indexed = months completed
+  const ytdIncome = monthlyIncome * monthsElapsed;
+  const sharesAtPar = Math.floor(positionSize / 100); // STRC par = $100
+  const sharesAtMarket = s.strc_price > 0 ? Math.floor(positionSize / s.strc_price) : 0;
+  const currentValue = sharesAtMarket * s.strc_price;
+  const yieldOnCost = s.strc_price > 0 ? (annualRate * 100 / s.strc_price) * 100 : 0;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
-        <KpiCard label="Effective Yield" dotColor="var(--accent)" value={fmtPct(s.strc_effective_yield)} />
-        <KpiCard label="Par Spread" dotColor="var(--accent)" value={fmtBps(s.strc_par_spread_bps)} deltaType={s.strc_par_spread_bps >= 0 ? "up" : "down"} />
-        <KpiCard label="Monthly / $1M" dotColor="var(--green)" value={`$${monthlyPer1M.toLocaleString("en-US", { maximumFractionDigits: 0 })}`} />
-        <KpiCard label="YTD Income / $1M" dotColor="var(--green)" value={`$${(monthlyPer1M * new Date().getMonth()).toLocaleString("en-US", { maximumFractionDigits: 0 })}`} footer="Cumulative since Jan 1" />
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--card-gap)" }}>
+      {/* Position Size Input */}
+      <div className="card" style={{ padding: 14 }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-end" }}>
+          <label style={{ fontSize: "var(--text-xs)", color: "var(--t3)", flex: "0 0 220px" }}>
+            Position Size
+            <input
+              type="text"
+              value={`$${positionSize.toLocaleString()}`}
+              onChange={(e) => { const v = parseInt(e.target.value.replace(/[^0-9]/g, "")); if (!isNaN(v)) setPositionSize(Math.max(10000, v)); }}
+              className="mono"
+              style={{ display: "block", width: "100%", padding: "6px 10px", border: "1px solid var(--border)", borderRadius: "var(--r-xs)", fontSize: "var(--text-md)", fontWeight: 600, marginTop: 4, background: "var(--surface-2)" }}
+            />
+          </label>
+          <div style={{ display: "flex", gap: 4, paddingBottom: 2 }}>
+            {[100_000, 500_000, 1_000_000, 5_000_000, 10_000_000].map((preset) => (
+              <button
+                key={preset}
+                onClick={() => setPositionSize(preset)}
+                style={{
+                  padding: "5px 10px", borderRadius: "var(--r-xs)", border: "1px solid var(--border)",
+                  background: positionSize === preset ? "var(--t1)" : "var(--bg)",
+                  color: positionSize === preset ? "#fff" : "var(--t2)",
+                  fontSize: "var(--text-xs)", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap",
+                }}
+              >
+                {preset >= 1_000_000 ? `$${preset / 1_000_000}M` : `$${preset / 1_000}K`}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
-      <SignalPanel currentSignal={signal} strcPrice={s.strc_price} btcCoverage={s.btc_coverage_ratio} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
+        {/* Yield & Income */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--card-gap)" }}>
+          <KpiCard label="Effective Yield" dotColor="var(--accent)" value={fmtPct(s.strc_effective_yield)} />
+          <KpiCard label="Par Spread" dotColor="var(--accent)" value={fmtBps(s.strc_par_spread_bps)} deltaType={s.strc_par_spread_bps >= 0 ? "up" : "down"} />
+          <KpiCard label="Monthly Income" dotColor="var(--green)" value={`$${monthlyIncome.toLocaleString("en-US", { maximumFractionDigits: 0 })}`} footer={`$${positionSize.toLocaleString()} × ${fmtPct(s.strc_rate_pct)} ÷ 12`} />
+          <KpiCard label="YTD Income" dotColor="var(--green)" value={`$${ytdIncome.toLocaleString("en-US", { maximumFractionDigits: 0 })}`} footer={`${monthsElapsed} months through ${new Date().toLocaleString("en-US", { month: "short" })}`} />
+        </div>
+        <SignalPanel currentSignal={signal} strcPrice={s.strc_price} btcCoverage={s.btc_coverage_ratio} />
+      </div>
+
+      {/* Position Details */}
+      <div className="card" style={{ padding: 14 }}>
+        <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, marginBottom: 10 }}>Position Details</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+          <DetailTile label="Shares (at par $100)" value={sharesAtPar.toLocaleString()} />
+          <DetailTile label={`Shares (at $${Number(s.strc_price).toFixed(2)})`} value={sharesAtMarket.toLocaleString()} />
+          <DetailTile label="Current Market Value" value={`$${currentValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`} />
+          <DetailTile label="Yield on Cost" value={fmtPct(yieldOnCost)} />
+          <DetailTile label="Annual Income" value={`$${yearlyIncome.toLocaleString("en-US", { maximumFractionDigits: 0 })}`} />
+          <DetailTile label="Daily Income" value={`$${(yearlyIncome / 365).toLocaleString("en-US", { maximumFractionDigits: 0 })}`} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -81,7 +139,7 @@ function HedgeMode({ snap }: { snap: Record<string, number & string & boolean> }
       selectedPutMid: activeRow.mid, selectedPutDelta: activeRow.delta,
       selectedPutStrike: activeRow.strike, selectedDte: activeRow.dte,
       shortPutMid: 0, callMid: 0,
-      mstrPrice: s.strc_price ? 245 : 245, btcSpot: s.btc_price || 70847,
+      mstrPrice: s.mstr_price || 390, btcSpot: s.btc_price || 105000,
       strcEffectiveYield: s.strc_effective_yield || 11.2, sofr1m: s.sofr_1m_pct || 4.3,
     });
   }, [positionSize, asset, strategy, hedgeRatio, activeRow, s]);
@@ -93,7 +151,7 @@ function HedgeMode({ snap }: { snap: Record<string, number & string & boolean> }
       btc_coverage_ratio: s.btc_coverage_ratio || 4.3,
       net_yield_pct: outputs.netHedgedYield,
       sofr_pct: s.sofr_1m_pct || 4.3,
-      strike_otm_pct: activeRow ? Math.abs((activeRow.strike - (asset === "mstr" ? 245 : s.btc_price || 70847)) / (asset === "mstr" ? 245 : s.btc_price || 70847) * 100) : 0,
+      strike_otm_pct: activeRow ? Math.abs((activeRow.strike - (asset === "mstr" ? (s.mstr_price || 390) : (s.btc_price || 105000))) / (asset === "mstr" ? (s.mstr_price || 390) : (s.btc_price || 105000)) * 100) : 0,
       iv_percentile: 60,
       days_to_announcement: s.days_to_announcement || 18,
     };
@@ -103,9 +161,19 @@ function HedgeMode({ snap }: { snap: Record<string, number & string & boolean> }
 
   return (
     <div>
-      {/* Delay banner */}
-      <div style={{ padding: "8px 12px", background: "var(--amber-l)", borderRadius: "var(--r-xs)", fontSize: "var(--text-sm)", color: "var(--amber)", marginBottom: 16 }}>
-        Options prices are delayed ~15 min (FMP). Deribit refreshes every 5 min. Confirm with broker before execution.
+      {/* Source & delay banner */}
+      <div style={{ padding: "8px 12px", background: asset === "btc" ? "var(--green-l)" : "var(--amber-l)", borderRadius: "var(--r-xs)", fontSize: "var(--text-sm)", color: asset === "btc" ? "var(--green)" : "var(--amber)", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>
+          {asset === "btc"
+            ? "BTC options via Deribit — real-time pricing. 1 contract = 1 BTC."
+            : "MSTR options via FMP — delayed ~15 min. Confirm with broker before execution."
+          }
+        </span>
+        {optionsData && (
+          <span style={{ fontSize: "var(--text-xs)", opacity: 0.8 }}>
+            Spot: ${optionsData.spot_price?.toLocaleString() ?? "—"} · Source: {optionsData.source ?? "—"} · {optionsData.delayed_minutes === 0 ? "Live" : `${optionsData.delayed_minutes}m delay`}
+          </span>
+        )}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "2fr 3fr", gap: "var(--card-gap)" }}>
@@ -235,12 +303,12 @@ function HedgeMode({ snap }: { snap: Record<string, number & string & boolean> }
                         <td className="mono" style={{ padding: "6px 8px", fontWeight: 600, textAlign: "right" }}>
                           {isSelected && "● "}{isAtm && !isSelected && <Badge variant="violet">ATM</Badge>} ${row.strike}
                         </td>
-                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right" }}>${row.bid.toFixed(2)}</td>
-                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right" }}>${row.ask.toFixed(2)}</td>
-                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>${row.mid.toFixed(2)}</td>
-                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", color: row.iv < 80 ? "var(--green)" : row.iv < 100 ? "var(--amber)" : "var(--red)" }}>{fmtPct(row.iv, 1)}</td>
-                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", color: "var(--violet)" }}>{row.delta.toFixed(2)}</td>
-                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", color: row.oi < 100 ? "var(--t3)" : "var(--t1)" }}>{row.oi.toLocaleString()}</td>
+                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right" }}>${(row.bid ?? 0).toFixed(2)}</td>
+                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right" }}>${(row.ask ?? 0).toFixed(2)}</td>
+                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>${(row.mid ?? 0).toFixed(2)}</td>
+                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", color: (row.iv ?? 0) < 80 ? "var(--green)" : (row.iv ?? 0) < 100 ? "var(--amber)" : "var(--red)" }}>{fmtPct(row.iv ?? 0, 1)}</td>
+                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", color: "var(--violet)" }}>{(row.delta ?? 0).toFixed(2)}</td>
+                        <td className="mono" style={{ padding: "6px 8px", textAlign: "right", color: (row.oi ?? 0) < 100 ? "var(--t3)" : "var(--t1)" }}>{(row.oi ?? 0).toLocaleString()}</td>
                         <td className="mono" style={{ padding: "6px 8px", textAlign: "right" }}>{(row.volume ?? 0).toLocaleString()}</td>
                       </tr>
                     );
@@ -265,6 +333,15 @@ function OutputTile({ label, value, color, highlighted }: { label: string; value
     <div style={{ padding: "6px 8px", borderRadius: "var(--r-xs)", background: highlighted ? "var(--accent-l)" : "var(--surface)" }}>
       <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)" }}>{label}</div>
       <div className="mono" style={{ fontSize: "var(--text-md)", fontWeight: 600, color: color || "var(--t1)" }}>{value}</div>
+    </div>
+  );
+}
+
+function DetailTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", marginBottom: 2 }}>{label}</div>
+      <div className="mono" style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t1)" }}>{value}</div>
     </div>
   );
 }

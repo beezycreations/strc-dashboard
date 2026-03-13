@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useSnapshot, useHistory } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
 import { ProgressBar, StatRow } from "@/src/components/ui";
@@ -42,7 +43,15 @@ export default function RiskAnalysisView() {
       {/* 3×2 Risk cards grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "var(--card-gap)" }}>
         {/* 1. Dividend Coverage */}
-        <RiskCard title="Dividend Coverage" status={riskCards[0].status}>
+        <RiskCard
+          title="Dividend Coverage"
+          status={riskCards[0].status}
+          methodology={<>
+            <p><strong style={{ color: "var(--t2)" }}>USD Reserve Coverage</strong> = Cash &amp; equivalents / annual dividend obligations. Measures how many months of STRC (and other preferred) dividends can be paid from existing cash without any new capital raises.</p>
+            <p><strong style={{ color: "var(--t2)" }}>ATM Runway</strong> = (ATM remaining capacity + USD reserve) / monthly obligation burn rate. Only meaningful when mNAV &gt; 1.0&times; (above par), since ATM issuance at or below NAV would be dilutive and unlikely. Annual obligations include STRC, STRF, STRK, and STRD dividends plus convert coupon service.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Signal thresholds</strong>: Safe &gt; 12 months coverage, Watch 6&ndash;12 months, Alert &lt; 6 months.</p>
+          </>}
+        >
           <ProgressBar
             label="USD Reserve Coverage"
             value={fmtMonths(s.usd_coverage_months)}
@@ -83,7 +92,16 @@ export default function RiskAnalysisView() {
         </RiskCard>
 
         {/* 3. mNAV Sustainability */}
-        <RiskCard title="mNAV Sustainability" status={riskCards[2].status}>
+        <RiskCard
+          title="mNAV Sustainability"
+          status={riskCards[2].status}
+          methodology={<>
+            <p><strong style={{ color: "var(--t2)" }}>mNAV</strong> = Enterprise Value / BTC Reserve, per Strategy&apos;s official methodology. EV = MSTR market cap + convertible debt ($8.2B) + preferred notional ($5.8B STRF+STRC+STRK+STRD) &minus; cash (~$1B). Shares outstanding are adjusted for estimated ATM issuance since the last 8-K filing.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Break-even BTC</strong> = EV / total BTC holdings. This is the BTC price at which mNAV = 1.0&times;. Below this price, Strategy&apos;s enterprise value is less than its Bitcoin reserve, making accretive capital raises difficult.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Regime classification</strong>: Premium (&gt;2.0&times;) signals strong issuance capacity; Tactical (1.2&ndash;2.0&times;) means selective issuance; Discount (&lt;1.2&times;) indicates constrained capital raising ability.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Signal thresholds</strong>: Safe &gt; 1.5&times;, Watch 1.0&ndash;1.5&times;, Alert &lt; 1.0&times;.</p>
+          </>}
+        >
           <StatRow cells={[
             { label: "Current mNAV", value: fmtMultiple(s.mnav), color: s.mnav > 1.5 ? "var(--green)" : "var(--amber)" },
             { label: "30d Trend", value: `${s.mnav_30d_trend >= 0 ? "+" : ""}${s.mnav_30d_trend.toFixed(3)}`, color: s.mnav_30d_trend >= 0 ? "var(--green)" : "var(--red)" },
@@ -97,13 +115,21 @@ export default function RiskAnalysisView() {
         </RiskCard>
 
         {/* 4. Liquidation Recovery */}
-        <RiskCard title="Liquidation Recovery" status={riskCards[3].status}>
+        <RiskCard
+          title="Liquidation Recovery"
+          status={riskCards[3].status}
+          methodology={<>
+            <p><strong style={{ color: "var(--t2)" }}>Recovery model</strong>: Simulates a hypothetical wind-down where Strategy&apos;s BTC reserve is liquidated at various price levels. Proceeds are distributed per the capital structure&apos;s strict seniority waterfall.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Waterfall order</strong>: (1) Convertible notes ($8.2B senior secured), (2) STRF ($711M senior preferred at 10%), (3) STRC ($3.4B at floating rate), (4) STRK ($700M at 8%), (5) STRD ($1.0B at 10%), (6) MSTR common equity (residual).</p>
+            <p><strong style={{ color: "var(--t2)" }}>STRC recovery %</strong> = max(0, min(1, (BTC liquidation value &minus; senior claims) / STRC notional)). Senior claims = converts + STRF = $8.911B. STRC is fully covered only when BTC reserve exceeds $12.3B (senior + STRC notional).</p>
+            <p><strong style={{ color: "var(--t2)" }}>Limitations</strong>: Assumes orderly liquidation at stated BTC price (no slippage), ignores accrued dividends, legal costs, and potential haircuts on converts. Real recovery could differ materially.</p>
+          </>}
+        >
           <div style={{ fontSize: "var(--text-sm)", color: "var(--t2)", marginBottom: 8 }}>
             STRC recovery estimate in wind-down
           </div>
           {[100, 75, 50, 25].map((pctBtc) => {
             const btcVal = s.btc_holdings * s.btc_price * (pctBtc / 100);
-            const seniorClaims = 8.2e9 + 0.711e9 + 3.4e9;
             const recovery = Math.min(1, Math.max(0, (btcVal - 8.2e9 - 0.711e9) / 3.4e9));
             return (
               <div key={pctBtc} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: "var(--text-sm)" }}>
@@ -117,7 +143,16 @@ export default function RiskAnalysisView() {
         </RiskCard>
 
         {/* 5. Rate Reset Risk */}
-        <RiskCard title="Rate Reset Risk" status={riskCards[4].status}>
+        <RiskCard
+          title="Rate Reset Risk"
+          status={riskCards[4].status}
+          methodology={<>
+            <p><strong style={{ color: "var(--t2)" }}>STRC rate structure</strong>: Floating rate = SOFR 1-month + fixed spread, reset monthly. Strategy announces the rate on or before the last business day of each month for the following period. The rate cannot decrease by more than 25bps per month.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Rate floor</strong>: The effective minimum rate is the prevailing SOFR 1M rate (currently {fmtPct(s.sofr_1m_pct)}). Even if Strategy reduces the spread to zero, the rate cannot fall below SOFR. The 25bps/month max reduction cap creates a glide path from the current rate to the floor.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Time to floor</strong>: (Current rate &minus; SOFR) / 0.25 = minimum months before the rate could reach SOFR. This is a worst case; Strategy may choose slower reductions or maintain a spread above zero.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Signal thresholds</strong>: Safe when rate &gt; 8% (attractive yield), Watch when 5&ndash;8%, Alert &lt; 5%.</p>
+          </>}
+        >
           <StatRow cells={[
             { label: "Current Rate", value: fmtPct(s.strc_rate_pct), color: "var(--violet)" },
             { label: "SOFR Floor", value: fmtPct(s.sofr_1m_pct) },
@@ -137,7 +172,16 @@ export default function RiskAnalysisView() {
         </RiskCard>
 
         {/* 6. ATM Pace */}
-        <RiskCard title="ATM Pace vs BTC" status={riskCards[5].status}>
+        <RiskCard
+          title="ATM Pace vs BTC"
+          status={riskCards[5].status}
+          methodology={<>
+            <p><strong style={{ color: "var(--t2)" }}>ATM program</strong>: Strategy&apos;s STRC at-the-market equity offering allows continuous share issuance at market price. Proceeds fund BTC purchases (the &ldquo;flywheel&rdquo;). The program has a fixed authorized size; once exhausted, a new registration is required (typically takes 2&ndash;4 weeks).</p>
+            <p><strong style={{ color: "var(--t2)" }}>90d Pace</strong> = total STRC ATM proceeds over the trailing 90 calendar days, annualized to a monthly rate. This measures the current deployment velocity and indicates how quickly the remaining capacity will be consumed.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Runway</strong> = ATM remaining / monthly pace. When runway is short, there is risk of a gap in issuance capacity between program exhaustion and SEC approval of a new shelf registration, which would temporarily halt the BTC acquisition flywheel.</p>
+            <p><strong style={{ color: "var(--t2)" }}>Signal thresholds</strong>: Safe &gt; $1.5B remaining, Watch $1.0&ndash;1.5B, Alert &lt; $1.0B.</p>
+          </>}
+        >
           <StatRow cells={[
             { label: "STRC ATM Remaining", value: `$${(s.atm_remaining / 1e9).toFixed(2)}B` },
             { label: "90d Pace", value: `$${(s.atm_pace_90d_monthly / 1e6).toFixed(0)}M/mo` },
@@ -185,7 +229,8 @@ export default function RiskAnalysisView() {
   );
 }
 
-function RiskCard({ title, status, children }: { title: string; status: "safe" | "watch" | "alert"; children: React.ReactNode }) {
+function RiskCard({ title, status, children, methodology }: { title: string; status: "safe" | "watch" | "alert"; children: React.ReactNode; methodology?: React.ReactNode }) {
+  const [showMethodology, setShowMethodology] = useState(false);
   const variant = status === "safe" ? "green" : status === "watch" ? "amber" : "red";
   const label = status.toUpperCase();
   return (
@@ -195,6 +240,35 @@ function RiskCard({ title, status, children }: { title: string; status: "safe" |
         <Badge variant={variant}>{label}</Badge>
       </div>
       {children}
+      {methodology && (
+        <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+          <button
+            onClick={() => setShowMethodology(!showMethodology)}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: 0,
+              fontSize: "var(--text-xs)",
+              color: "var(--t3)",
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ transform: showMethodology ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s ease", display: "inline-block" }}>
+              ▶
+            </span>
+            Methodology
+          </button>
+          {showMethodology && (
+            <div style={{ marginTop: 8, fontSize: "var(--text-xs)", color: "var(--t3)", lineHeight: 1.6 }}>
+              {methodology}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { useVolumeAtm, useSnapshot } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
+import BacktestResults from "@/src/components/ui/BacktestResults";
 import {
   ComposedChart,
   Bar,
@@ -15,127 +16,43 @@ import {
   CartesianGrid,
 } from "recharts";
 import { colors, rechartsDefaults } from "@/src/lib/chart-config";
-
-// ── Confirmed BTC purchase history from Strategy 8-K filings ─────────
-// Source: strategy.com/purchases — each row is a confirmed 8-K filing
-// Fields: [reported_date, btc_acquired, avg_cost, total_cost_millions, cumulative_btc]
-const CONFIRMED_PURCHASES: Array<{
-  date: string;
-  btc: number;
-  avg_cost: number;
-  cost_m: number;
-  cumulative: number;
-}> = [
-  { date: "2020-08-11", btc: 21454, avg_cost: 11656, cost_m: 250, cumulative: 21454 },
-  { date: "2020-09-14", btc: 16796, avg_cost: 10413, cost_m: 175, cumulative: 38250 },
-  { date: "2020-12-04", btc: 2574, avg_cost: 19411, cost_m: 50, cumulative: 40824 },
-  { date: "2020-12-21", btc: 29646, avg_cost: 21918, cost_m: 650, cumulative: 70470 },
-  { date: "2021-01-22", btc: 314, avg_cost: 31847, cost_m: 10, cumulative: 70784 },
-  { date: "2021-02-02", btc: 295, avg_cost: 33898, cost_m: 10, cumulative: 71079 },
-  { date: "2021-02-24", btc: 19452, avg_cost: 52750, cost_m: 1026, cumulative: 90531 },
-  { date: "2021-03-01", btc: 328, avg_cost: 45732, cost_m: 15, cumulative: 90859 },
-  { date: "2021-03-05", btc: 205, avg_cost: 48780, cost_m: 10, cumulative: 91064 },
-  { date: "2021-03-12", btc: 262, avg_cost: 57252, cost_m: 15, cumulative: 91326 },
-  { date: "2021-04-05", btc: 253, avg_cost: 59288, cost_m: 15, cumulative: 91579 },
-  { date: "2021-05-13", btc: 271, avg_cost: 55348, cost_m: 15, cumulative: 91850 },
-  { date: "2021-05-18", btc: 229, avg_cost: 43668, cost_m: 10, cumulative: 92079 },
-  { date: "2021-06-21", btc: 13005, avg_cost: 19140, cost_m: 249, cumulative: 105085 },
-  { date: "2021-09-13", btc: 8957, avg_cost: 46779, cost_m: 419, cumulative: 114042 },
-  { date: "2021-11-28", btc: 7002, avg_cost: 59125, cost_m: 414, cumulative: 121044 },
-  { date: "2021-12-09", btc: 1434, avg_cost: 57458, cost_m: 82, cumulative: 122478 },
-  { date: "2021-12-30", btc: 1914, avg_cost: 49214, cost_m: 94, cumulative: 124391 },
-  { date: "2022-01-31", btc: 660, avg_cost: 37879, cost_m: 25, cumulative: 125051 },
-  { date: "2022-04-05", btc: 4167, avg_cost: 45596, cost_m: 190, cumulative: 129218 },
-  { date: "2022-06-28", btc: 480, avg_cost: 20833, cost_m: 10, cumulative: 129699 },
-  { date: "2022-09-20", btc: 301, avg_cost: 19933, cost_m: 6, cumulative: 130000 },
-  { date: "2022-12-22", btc: 2395, avg_cost: 17883, cost_m: 43, cumulative: 132395 },
-  { date: "2022-12-24", btc: 810, avg_cost: 16852, cost_m: 14, cumulative: 132500 },
-  { date: "2023-03-27", btc: 6455, avg_cost: 23233, cost_m: 150, cumulative: 138955 },
-  { date: "2023-04-05", btc: 1045, avg_cost: 28039, cost_m: 29, cumulative: 140000 },
-  { date: "2023-06-27", btc: 12333, avg_cost: 28143, cost_m: 347, cumulative: 152333 },
-  { date: "2023-07-31", btc: 467, avg_cost: 30835, cost_m: 14, cumulative: 152800 },
-  { date: "2023-09-24", btc: 5445, avg_cost: 27041, cost_m: 147, cumulative: 158245 },
-  { date: "2023-11-01", btc: 155, avg_cost: 34194, cost_m: 5, cumulative: 158400 },
-  { date: "2023-11-30", btc: 16130, avg_cost: 36801, cost_m: 593, cumulative: 174530 },
-  { date: "2023-12-27", btc: 14620, avg_cost: 42118, cost_m: 616, cumulative: 189150 },
-  { date: "2024-02-06", btc: 850, avg_cost: 43765, cost_m: 37, cumulative: 190000 },
-  { date: "2024-02-26", btc: 3000, avg_cost: 51667, cost_m: 155, cumulative: 193000 },
-  { date: "2024-03-11", btc: 12000, avg_cost: 68475, cost_m: 822, cumulative: 205000 },
-  { date: "2024-03-19", btc: 9245, avg_cost: 67346, cost_m: 623, cumulative: 214246 },
-  { date: "2024-05-01", btc: 164, avg_cost: 47561, cost_m: 8, cumulative: 214410 },
-  { date: "2024-06-20", btc: 11931, avg_cost: 65868, cost_m: 786, cumulative: 226331 },
-  { date: "2024-08-01", btc: 169, avg_cost: 67456, cost_m: 11, cumulative: 226500 },
-  { date: "2024-09-13", btc: 18300, avg_cost: 60656, cost_m: 1110, cumulative: 244800 },
-  { date: "2024-09-20", btc: 7420, avg_cost: 61727, cost_m: 458, cumulative: 252220 },
-  { date: "2024-11-11", btc: 27200, avg_cost: 73529, cost_m: 2000, cumulative: 279420 },
-  { date: "2024-11-18", btc: 51780, avg_cost: 88876, cost_m: 4600, cumulative: 331200 },
-  { date: "2024-11-25", btc: 55500, avg_cost: 97297, cost_m: 5400, cumulative: 386700 },
-  { date: "2024-12-02", btc: 15400, avg_cost: 97403, cost_m: 1500, cumulative: 402100 },
-  { date: "2024-12-09", btc: 21550, avg_cost: 97471, cost_m: 2100, cumulative: 423650 },
-  { date: "2024-12-16", btc: 15350, avg_cost: 97707, cost_m: 1500, cumulative: 439000 },
-  { date: "2024-12-23", btc: 5262, avg_cost: 106603, cost_m: 561, cumulative: 444262 },
-  { date: "2024-12-30", btc: 2138, avg_cost: 97847, cost_m: 209, cumulative: 446400 },
-  { date: "2025-01-06", btc: 1070, avg_cost: 93458, cost_m: 100, cumulative: 447470 },
-  { date: "2025-01-13", btc: 2530, avg_cost: 96047, cost_m: 243, cumulative: 450000 },
-  { date: "2025-01-21", btc: 11000, avg_cost: 100000, cost_m: 1100, cumulative: 461000 },
-  { date: "2025-01-27", btc: 10107, avg_cost: 108836, cost_m: 1100, cumulative: 471107 },
-  { date: "2025-02-10", btc: 7633, avg_cost: 97274, cost_m: 742, cumulative: 478740 },
-  { date: "2025-02-24", btc: 20356, avg_cost: 97776, cost_m: 1990, cumulative: 499096 },
-  { date: "2025-03-17", btc: 130, avg_cost: 82308, cost_m: 11, cumulative: 499226 },
-  { date: "2025-03-24", btc: 6911, avg_cost: 84481, cost_m: 584, cumulative: 506137 },
-  { date: "2025-03-31", btc: 22048, avg_cost: 87089, cost_m: 1920, cumulative: 528185 },
-  { date: "2025-04-14", btc: 3459, avg_cost: 82655, cost_m: 286, cumulative: 531644 },
-  { date: "2025-04-21", btc: 6556, avg_cost: 84767, cost_m: 556, cumulative: 538200 },
-  { date: "2025-04-28", btc: 15355, avg_cost: 92518, cost_m: 1420, cumulative: 553555 },
-  { date: "2025-05-05", btc: 1895, avg_cost: 94973, cost_m: 180, cumulative: 555450 },
-  { date: "2025-05-12", btc: 13390, avg_cost: 100149, cost_m: 1340, cumulative: 568840 },
-  { date: "2025-05-19", btc: 7390, avg_cost: 103511, cost_m: 765, cumulative: 576230 },
-  { date: "2025-05-26", btc: 4020, avg_cost: 106294, cost_m: 427, cumulative: 580250 },
-  { date: "2025-06-02", btc: 705, avg_cost: 106383, cost_m: 75, cumulative: 580955 },
-  { date: "2025-06-16", btc: 10100, avg_cost: 104059, cost_m: 1051, cumulative: 590000 },
-  { date: "2025-06-23", btc: 2100, avg_cost: 106122, cost_m: 223, cumulative: 592100 },
-  { date: "2025-07-14", btc: 4225, avg_cost: 111695, cost_m: 472, cumulative: 601550 },
-  { date: "2025-07-21", btc: 6220, avg_cost: 118975, cost_m: 740, cumulative: 607770 },
-  { date: "2025-07-29", btc: 21021, avg_cost: 117257, cost_m: 2465, cumulative: 628791 },
-  { date: "2025-08-11", btc: 155, avg_cost: 116129, cost_m: 18, cumulative: 629096 },
-  { date: "2025-08-18", btc: 430, avg_cost: 118605, cost_m: 51, cumulative: 629376 },
-  { date: "2025-08-25", btc: 3081, avg_cost: 115877, cost_m: 357, cumulative: 632457 },
-  { date: "2025-09-02", btc: 4048, avg_cost: 110939, cost_m: 449, cumulative: 636505 },
-  { date: "2025-09-08", btc: 1955, avg_cost: 110998, cost_m: 217, cumulative: 638460 },
-  { date: "2025-09-15", btc: 525, avg_cost: 114286, cost_m: 60, cumulative: 638985 },
-  { date: "2025-09-22", btc: 850, avg_cost: 117647, cost_m: 100, cumulative: 639835 },
-  { date: "2025-09-29", btc: 196, avg_cost: 113048, cost_m: 22, cumulative: 640031 },
-  { date: "2025-10-13", btc: 220, avg_cost: 123561, cost_m: 27, cumulative: 640250 },
-  { date: "2025-10-20", btc: 168, avg_cost: 112051, cost_m: 19, cumulative: 640418 },
-  { date: "2025-10-27", btc: 390, avg_cost: 111053, cost_m: 43, cumulative: 640808 },
-  { date: "2025-11-03", btc: 397, avg_cost: 114771, cost_m: 46, cumulative: 641205 },
-  { date: "2025-11-10", btc: 487, avg_cost: 102663, cost_m: 50, cumulative: 641692 },
-  { date: "2025-11-17", btc: 8178, avg_cost: 102225, cost_m: 836, cumulative: 649870 },
-  { date: "2025-12-01", btc: 130, avg_cost: 92308, cost_m: 12, cumulative: 650000 },
-  { date: "2025-12-08", btc: 10624, avg_cost: 90617, cost_m: 963, cumulative: 660624 },
-  { date: "2025-12-15", btc: 10645, avg_cost: 92057, cost_m: 980, cumulative: 671268 },
-  { date: "2025-12-29", btc: 1229, avg_cost: 88777, cost_m: 109, cumulative: 672497 },
-  { date: "2026-01-05", btc: 1283, avg_cost: 90391, cost_m: 116, cumulative: 673783 },
-  { date: "2026-01-12", btc: 13627, avg_cost: 91519, cost_m: 1247, cumulative: 687410 },
-  { date: "2026-01-20", btc: 22305, avg_cost: 95284, cost_m: 2125, cumulative: 709715 },
-  { date: "2026-01-26", btc: 2932, avg_cost: 90061, cost_m: 264, cumulative: 712647 },
-  { date: "2026-02-02", btc: 855, avg_cost: 87974, cost_m: 75, cumulative: 713502 },
-  { date: "2026-02-09", btc: 1142, avg_cost: 78815, cost_m: 90, cumulative: 714644 },
-  { date: "2026-02-17", btc: 2486, avg_cost: 67540, cost_m: 168, cumulative: 717131 },
-  { date: "2026-02-23", btc: 592, avg_cost: 67568, cost_m: 40, cumulative: 717722 },
-  { date: "2026-03-02", btc: 3015, avg_cost: 67700, cost_m: 204, cumulative: 720737 },
-  { date: "2026-03-09", btc: 17994, avg_cost: 70946, cost_m: 1277, cumulative: 738731 },
-];
-
-// Latest confirmed cumulative total
-const LATEST_CONFIRMED_BTC = CONFIRMED_PURCHASES[CONFIRMED_PURCHASES.length - 1].cumulative;
-const LATEST_CONFIRMED_DATE = CONFIRMED_PURCHASES[CONFIRMED_PURCHASES.length - 1].date;
+import {
+  CONFIRMED_PURCHASES,
+  LATEST_CONFIRMED_BTC,
+  LATEST_CONFIRMED_DATE,
+} from "@/src/lib/data/confirmed-purchases";
+import {
+  buildBtcPurchaseBacktestSimple,
+  buildAtmIssuanceBacktest,
+  optimizeBacktestParams,
+  estimateBtcHoldings,
+  type EstimatedHoldings,
+  type OptimizedParams,
+} from "@/src/lib/calculators/backtest";
 
 interface CumulativeDay {
   date: string;
   strc_cumulative_usd: number;
   mstr_cumulative_usd: number;
 }
+
+interface AtmEvent {
+  date: string;
+  proceeds_usd: number;
+  shares_issued: number;
+  avg_price: number;
+  is_estimated: boolean;
+}
+
+interface VolumeDay {
+  date: string;
+  strc_volume: number;
+  strc_price: number;
+  mstr_volume: number;
+}
+
+// Default participation rate — auto-optimized at runtime
+const DEFAULT_PARTICIPATION_RATE = 0.030;
 
 export default function BtcPurchaseChart() {
   const { data, isLoading } = useVolumeAtm();
@@ -144,6 +61,68 @@ export default function BtcPurchaseChart() {
   const [showMethodology, setShowMethodology] = useState(false);
 
   const btcPrice = snap?.btc_price ?? 83000;
+
+  // AUTO-OPTIMIZING BACKTEST: Same optimizer as VolumeATMTracker — cached,
+  // so both components share the same optimized parameters from the grid search.
+  const { atmBacktest, btcBacktest, optimizedParams } = useMemo(() => {
+    const allVolume = (data?.volume_history ?? []) as VolumeDay[];
+    const optimized = optimizeBacktestParams(allVolume);
+
+    if (optimized.params.atm_confidence > 0) {
+      return {
+        atmBacktest: optimized.atmSummary,
+        btcBacktest: optimized.btcSummary,
+        optimizedParams: optimized.params,
+      };
+    }
+
+    // Fallback: use mock ATM events for dev/demo mode
+    const events = (data?.atm_events ?? []) as AtmEvent[];
+    const confirmed = events
+      .filter((e) => !e.is_estimated)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const baseRate = data?.kpi?.participation_rate_current ?? DEFAULT_PARTICIPATION_RATE;
+
+    let atmResult = buildAtmIssuanceBacktest([]);
+    if (confirmed.length >= 3) {
+      const pairs = confirmed.map((evt, idx) => {
+        const periodStart = idx > 0
+          ? confirmed[idx - 1].date
+          : allVolume.length > 0 ? allVolume[0].date : evt.date;
+        const periodVolume = allVolume.filter((v) => v.date > periodStart && v.date <= evt.date);
+        let totalEst = 0;
+        for (const vol of periodVolume) {
+          const fullIdx = allVolume.indexOf(vol);
+          const lookback = allVolume.slice(Math.max(0, fullIdx - 19), fullIdx + 1);
+          const avg20d = lookback.length > 0
+            ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
+            : vol.strc_volume;
+          const isHigh = vol.strc_volume > avg20d * 1.5;
+          const rate = isHigh ? baseRate * 1.5 : baseRate;
+          totalEst += vol.strc_volume * rate * vol.strc_price;
+        }
+        return { date: evt.date, actual_proceeds: evt.proceeds_usd, estimated_proceeds: totalEst };
+      });
+      atmResult = buildAtmIssuanceBacktest(pairs);
+    }
+
+    return {
+      atmBacktest: atmResult,
+      btcBacktest: buildBtcPurchaseBacktestSimple(0.95, atmResult.confidence_score),
+      optimizedParams: null as OptimizedParams | null,
+    };
+  }, [data?.atm_events, data?.volume_history, data?.kpi?.participation_rate_current]);
+
+  // Step 3: Compute estimated BTC holdings (feeds mNAV downstream)
+  const holdings: EstimatedHoldings = useMemo(
+    () => estimateBtcHoldings(
+      (data?.cumulative_atm ?? []) as CumulativeDay[],
+      btcPrice,
+      optimizedParams?.conversion_rate ?? 0.95,
+      atmBacktest.confidence_score
+    ),
+    [data?.cumulative_atm, btcPrice, atmBacktest.confidence_score, optimizedParams?.conversion_rate]
+  );
 
   const chartData = useMemo(() => {
     // Determine date range
@@ -469,44 +448,50 @@ export default function BtcPurchaseChart() {
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>The BTC Flywheel</strong>: Strategy raises capital through ATM equity offerings
-              (MSTR common stock) and perpetual preferred stock issuance (STRC, STRF, STRK, STRD), then deploys
-              proceeds to purchase Bitcoin. This creates a self-reinforcing cycle: capital raises → BTC purchases
-              → increased BTC reserve → higher mNAV → further issuance capacity. Strategy typically deploys ATM
-              proceeds to BTC within 1–2 trading days.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimated purchases</strong> (<Badge variant="amber">Est.</Badge>): After the most recent
-              confirmed 8-K filing, daily BTC purchases are estimated using the change in cumulative ATM
-              proceeds (both MSTR common and preferred stock programs) divided by the current BTC price.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimation formula</strong>:
+              <strong style={{ color: "var(--t2)" }}>The Estimation Flywheel Chain</strong>: BTC purchase estimates are <em>downstream</em> of
+              ATM issuance estimates. The full chain is:
             </p>
             <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
-              <div>daily_atm_usd = delta(mstr_cumulative_atm) + delta(strc_cumulative_atm)</div>
-              <div>btc_conversion_rate = 0.95  // ~95% of proceeds deployed to BTC</div>
-              <div>est_btc_purchased = (daily_atm_usd × btc_conversion_rate) / btc_price</div>
-              <div>cumulative_btc = last_confirmed_total + sum(est_btc_purchased)</div>
+              <div>1. ATM issuance est. (volume × {optimizedParams ? `${(optimizedParams.participation_rate * 100).toFixed(1)}%` : "participation rate"} × price)</div>
+              <div>   ↓ ATM confidence: {atmBacktest.confidence_score}% {optimizedParams ? "(auto-optimized)" : ""}</div>
+              <div>2. BTC purchase est. (ATM proceeds × {optimizedParams ? `${(optimizedParams.conversion_rate * 100).toFixed(0)}%` : "95%"} / btc_price)</div>
+              <div>   ↓ BTC confidence capped by ATM: {btcBacktest.confidence_score}%</div>
+              <div>3. Est. BTC holdings = {holdings.confirmed_btc.toLocaleString()} confirmed + {holdings.estimated_btc_since.toLocaleString()} est. = {holdings.total_estimated_btc.toLocaleString()}</div>
+              <div>   ↓ Holdings confidence: {holdings.confidence_score}%</div>
+              <div>4. Feeds → mNAV, BTC coverage, impairment calculations</div>
             </div>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Cumulative total</strong>: The cumulative line anchors to the last confirmed
-              8-K total ({LATEST_CONFIRMED_BTC.toLocaleString()} BTC as of {LATEST_CONFIRMED_DATE}) and builds forward
-              with daily estimates. This ensures the chart always ties to Strategy&apos;s actual reported holdings.
+              <strong style={{ color: "var(--t2)" }}>Why confidence is connected</strong>: BTC purchase accuracy cannot exceed ATM
+              estimation accuracy — if we don&apos;t know the ATM proceeds precisely, we can&apos;t know the BTC purchased
+              precisely. The confidence score propagates downward through the chain and degrades further with each
+              day since the last confirmed 8-K ({holdings.confirmed_date}).
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>8-K reconciliation</strong>: When a new 8-K filing is published, it is added to the
-              confirmed purchase history. All prior estimated bars for that period are replaced by the confirmed
-              figure, and the cumulative total resets to the new confirmed value. Strategy typically files 8-Ks
-              weekly, so estimates are usually outstanding for 5–10 trading days before being reconciled.
+              <strong style={{ color: "var(--t2)" }}>Estimated holdings → mNAV</strong>: The estimated total BTC
+              ({holdings.total_estimated_btc.toLocaleString()} BTC) is used to compute real-time mNAV and other
+              downstream metrics. This provides the closest approximation to Strategy&apos;s actual position between
+              8-K filings, rather than using stale confirmed figures.
             </p>
 
-            <p style={{ margin: 0 }}>
-              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The 95% BTC conversion rate is an approximation — Strategy
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Self-optimizing model</strong>: All parameters (participation rate, high-volume
+              threshold, conversion rate) are automatically calibrated by grid search against confirmed 8-K filings.
+              When a new 8-K is filed, adding it to the confirmed data triggers automatic recalibration —
+              the model trains itself with each new data point to improve predictive accuracy over time.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>8-K reconciliation</strong>: When a new 8-K filing is published, all prior
+              estimates are replaced by confirmed figures, the cumulative total resets, and confidence returns
+              to 100%. Strategy typically files 8-Ks weekly, so estimates are usually outstanding for 5–10 trading days.
+            </p>
+
+            <BacktestResults summary={btcBacktest} label="BTC Purchase" />
+
+            <p style={{ margin: 0, marginTop: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The BTC conversion rate ({optimizedParams ? `${(optimizedParams.conversion_rate * 100).toFixed(0)}%` : "95%"}, auto-optimized) is an approximation — Strategy
               may retain a portion of proceeds for operating expenses, debt service, or cash reserves. Estimates
               also assume ATM proceeds are deployed at the current BTC price, whereas actual purchases may be
               executed at different prices over multiple days. All estimates are provisional and will be replaced

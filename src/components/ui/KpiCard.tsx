@@ -5,7 +5,7 @@ interface KpiCardProps {
   label: string;
   dotColor?: string;
   value: string;
-  delta?: string;
+  delta?: React.ReactNode;
   deltaType?: "up" | "down" | "neutral";
   footer?: React.ReactNode;
   highlighted?: boolean;

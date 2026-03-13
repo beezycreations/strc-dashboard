@@ -16,7 +16,6 @@ const NAV_SECTIONS = [
     title: "STRATEGIES",
     items: [
       { id: "positions" as View, label: "Position Modes" },
-      { id: "tranche" as View, label: "Tranche Product" },
     ],
   },
 ];

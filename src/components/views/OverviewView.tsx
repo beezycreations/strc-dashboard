@@ -3,14 +3,34 @@
 import { useSnapshot, useHistory } from "@/src/lib/hooks/use-api";
 import { KpiCard, StatRow, CapitalStackBar, CountdownChip, ProgressBar } from "@/src/components/ui";
 import Badge from "@/src/components/ui/Badge";
-import { fmtPct, fmtBps, fmtMultiple, fmtMonths } from "@/src/lib/utils/format";
+import { fmtPct, fmtBps, fmtMultiple } from "@/src/lib/utils/format";
 import PriceRateChart from "./charts/PriceRateChart";
 import BtcPurchaseChart from "./charts/BtcPurchaseChart";
 import VolumeATMTracker from "./VolumeATMTracker";
 
+function AsOf({ ts }: { ts?: string }) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  let label: string;
+  if (diffMins < 1) label = "just now";
+  else if (diffMins < 60) label = `${diffMins}m ago`;
+  else if (diffMins < 1440) label = `${Math.floor(diffMins / 60)}h ago`;
+  else label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+  return (
+    <span style={{ fontSize: 10, color: "var(--t3)", fontWeight: 400 }} title={timeStr}>
+      as of {label}
+    </span>
+  );
+}
+
 export default function OverviewView() {
   const { data: snap, isLoading } = useSnapshot();
-  const { data: history } = useHistory("3m");
+  const { data: history } = useHistory("all");
 
   if (isLoading || !snap) {
     return (
@@ -23,6 +43,7 @@ export default function OverviewView() {
   }
 
   const s = snap;
+  const ts = s.last_updated;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -34,7 +55,7 @@ export default function OverviewView() {
           value={`$${s.strc_price.toFixed(2)}`}
           delta={fmtBps(s.strc_par_spread_bps)}
           deltaType={s.strc_par_spread_bps >= 0 ? "up" : "down"}
-          footer={`Eff. Yield ${fmtPct(s.strc_effective_yield)}`}
+          footer={<span>Eff. Yield {fmtPct(s.strc_effective_yield)} <AsOf ts={ts} /></span>}
         />
         <KpiCard
           label="Current Rate"
@@ -45,10 +66,17 @@ export default function OverviewView() {
           footer={<CountdownChip daysUntil={s.days_to_announcement} date="" label="to announcement" />}
         />
         <KpiCard
+          label="MSTR Price"
+          dotColor="var(--t2)"
+          value={s.mstr_price != null ? `$${s.mstr_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "N/A"}
+          delta={s.mstr_change_pct != null ? <span>{s.mstr_change_pct >= 0 ? "+" : ""}{s.mstr_change_pct.toFixed(2)}% today <AsOf ts={ts} /></span> : undefined}
+          deltaType={s.mstr_change_pct != null ? (s.mstr_change_pct >= 0 ? "up" : "down") : "neutral"}
+        />
+        <KpiCard
           label="mNAV"
           dotColor="var(--amber)"
           value={fmtMultiple(s.mnav)}
-          delta={`${s.mnav_30d_trend >= 0 ? "+" : ""}${s.mnav_30d_trend.toFixed(2)} 30d`}
+          delta={<span>{s.mnav_30d_trend >= 0 ? "+" : ""}{s.mnav_30d_trend.toFixed(2)} 30d <AsOf ts={ts} /></span>}
           deltaType={s.mnav_30d_trend >= 0 ? "up" : "down"}
           footer={<Badge variant={s.mnav_regime === "discount" ? "green" : s.mnav_regime === "tactical" ? "amber" : "red"}>{s.mnav_regime}</Badge>}
         />
@@ -56,7 +84,7 @@ export default function OverviewView() {
           label="Bitcoin Price"
           dotColor="var(--btc)"
           value={`$${s.btc_price.toLocaleString()}`}
-          delta={`${s.btc_24h_pct >= 0 ? "+" : ""}${s.btc_24h_pct.toFixed(2)}% 24h`}
+          delta={<span>{s.btc_24h_pct >= 0 ? "+" : ""}{s.btc_24h_pct.toFixed(2)}% 24h <AsOf ts={ts} /></span>}
           deltaType={s.btc_24h_pct >= 0 ? "up" : "down"}
           footer={`${s.btc_holdings.toLocaleString()} BTC held`}
         />
@@ -66,12 +94,6 @@ export default function OverviewView() {
           value={`$${(s.btc_nav / 1e9).toFixed(1)}B`}
           highlighted
           footer={`${fmtMultiple(s.btc_coverage_ratio)} coverage · Impairment $${(s.btc_impairment_price / 1000).toFixed(1)}K`}
-        />
-        <KpiCard
-          label="USD Reserve"
-          dotColor="var(--green)"
-          value={`$${(s.usd_reserve / 1e9).toFixed(2)}B`}
-          footer={`${fmtMonths(s.usd_coverage_months)} coverage · $${(s.total_annual_obligations / 1e6).toFixed(0)}M/yr obligations`}
         />
       </div>
 
@@ -121,6 +143,14 @@ export default function OverviewView() {
         </div>
       </div>
 
+      {/* STRC Market Metrics row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "var(--card-gap)" }}>
+        <LiveCard label="Notional ($M)" value={s.strc_notional != null ? `$${(s.strc_notional / 1e6).toFixed(1)}` : null} sub="Par value outstanding" ts={ts} />
+        <LiveCard label="Market Cap ($M)" value={s.strc_market_cap != null ? `$${(s.strc_market_cap / 1e6).toFixed(1)}` : null} sub="Shares × price" ts={ts} />
+        <LiveCard label="1M VWAP" value={s.strc_1m_vwap != null ? `$${Number(s.strc_1m_vwap).toFixed(2)}` : null} sub="Volume-weighted avg" ts={ts} />
+        <LiveCard label="Trading Volume ($M)" value={s.strc_trading_volume_usd != null ? `$${(s.strc_trading_volume_usd / 1e6).toFixed(1)}` : null} sub={"Today\u0027s dollar volume"} ts={ts} />
+      </div>
+
       {/* Volume + ATM Issuance Tracker */}
       <VolumeATMTracker />
 
@@ -160,6 +190,21 @@ export default function OverviewView() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function LiveCard({ label, value, sub, ts }: { label: string; value: string | null; sub: string; ts?: string }) {
+  return (
+    <div className="card" style={{ padding: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)" }}>{label}</div>
+        {value != null && <AsOf ts={ts} />}
+      </div>
+      <div className="mono" style={{ fontSize: "var(--text-xl)", fontWeight: 600, color: value != null ? "var(--t1)" : "var(--t3)" }}>
+        {value ?? "N/A"}
+      </div>
+      <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)" }}>{sub}</div>
     </div>
   );
 }

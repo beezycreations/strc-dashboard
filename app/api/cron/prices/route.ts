@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
     // If market is open, fetch equity quotes
     const marketOpen = isMarketOpen();
     if (marketOpen) {
-      const tickers = ["STRC", "STRF", "STRK", "STRD", "MSTR"] as const;
+      const tickers = ["STRC", "STRF", "STRK", "STRD", "MSTR", "SPY"] as const;
       for (const ticker of tickers) {
         try {
           const quote = await fetchFmpQuote(ticker);
@@ -89,10 +89,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // At market close, mark EOD for equity tickers
+    // At market close, mark EOD for equity tickers + BTC
     if (isMarketClose()) {
       try {
-        const eodTickers = ["STRC", "STRF", "STRK", "STRD", "MSTR"];
+        const eodTickers = ["STRC", "STRF", "STRK", "STRD", "MSTR", "SPY"];
         for (const ticker of eodTickers) {
           // Find latest row for this ticker today and mark as EOD
           await db
@@ -109,6 +109,23 @@ export async function GET(request: NextRequest) {
             .onConflictDoUpdate({
               target: [priceHistory.ticker, priceHistory.ts, priceHistory.source],
               set: { isEod: true },
+            });
+        }
+        // BTC trades 24/7 — mark EOD alongside equities
+        const btcPrice = results.find((r) => r.ticker === "BTC")?.price;
+        if (btcPrice && btcPrice > 0) {
+          await db
+            .insert(priceHistory)
+            .values({
+              ticker: "BTC",
+              ts: now,
+              price: String(btcPrice),
+              source: "coinbase",
+              isEod: true,
+            })
+            .onConflictDoUpdate({
+              target: [priceHistory.ticker, priceHistory.ts, priceHistory.source],
+              set: { isEod: true, price: String(btcPrice) },
             });
         }
       } catch (e) {

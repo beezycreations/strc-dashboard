@@ -34,14 +34,16 @@ async function run() {
   // FMP equity tickers
   for (const ticker of TICKERS_FMP) {
     console.log(`Fetching ${ticker}...`);
-    const url = `https://financialmodelingprep.com/api/v3/historical-price-full/${ticker}?from=${IPO_DATE}&to=${today()}&apikey=${FMP_KEY}`;
+    const url = `https://financialmodelingprep.com/stable/historical-price-eod/full?symbol=${ticker}&from=${IPO_DATE}&to=${today()}&apikey=${FMP_KEY}`;
     const res = await fetch(url);
     if (!res.ok) {
       console.error(`  FMP error for ${ticker}: ${res.status}`);
       continue;
     }
     const data = await res.json();
-    const rows = [...(data.historical ?? [])].reverse();
+    // Stable API returns flat array; legacy used .historical wrapper
+    const hist = Array.isArray(data) ? data : (data?.historical ?? []);
+    const rows = [...hist].reverse();
     console.log(`  ✓ ${rows.length} days fetched for ${ticker}`);
 
     if (DB_URL) {
@@ -71,38 +73,61 @@ async function run() {
     await sleep(300);
   }
 
-  // BTC from CoinGecko
-  console.log("Fetching BTC...");
-  const btcUrl = `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=365&interval=daily`;
-  const btcRes = await fetch(btcUrl);
-  if (btcRes.ok) {
-    const { prices } = await btcRes.json();
-    const btcRows = (prices as [number, number][]).filter(
-      ([ts]) => new Date(ts).toISOString().slice(0, 10) >= IPO_DATE
-    );
-    console.log(`  ✓ ${btcRows.length} days fetched for BTC`);
+  // BTC from Coinbase Exchange API (free, no auth)
+  console.log("Fetching BTC from Coinbase...");
+  const COINBASE = "https://api.exchange.coinbase.com";
+  const btcCandles: Array<{ date: string; close: number }> = [];
+  const btcEnd = new Date();
+  const btcStart = new Date(IPO_DATE);
+  let chunkEnd = new Date(btcEnd);
 
-    if (DB_URL) {
-      const { db } = await import("../../src/db/client");
-      const { priceHistory } = await import("../../src/db/schema");
-      for (const [tsMs, price] of btcRows) {
-        try {
-          await db
-            .insert(priceHistory)
-            .values({
-              ticker: "BTC",
-              ts: new Date(tsMs),
-              price: price.toString(),
-              source: "coingecko",
-              isEod: true,
-            })
-            .onConflictDoNothing();
-        } catch {
-          // skip
+  while (chunkEnd > btcStart) {
+    const chunkStart = new Date(Math.max(chunkEnd.getTime() - 300 * 86400000, btcStart.getTime()));
+    const url = `${COINBASE}/products/BTC-USD/candles?granularity=86400&start=${chunkStart.toISOString()}&end=${chunkEnd.toISOString()}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`  Coinbase error: ${res.status}`);
+      break;
+    }
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      for (const [ts, , , , close] of data) {
+        const date = new Date(ts * 1000).toISOString().slice(0, 10);
+        if (date >= IPO_DATE && close > 0) {
+          btcCandles.push({ date, close });
         }
       }
-      console.log(`  ✓ Written to DB`);
     }
+    chunkEnd = new Date(chunkStart.getTime() - 86400000);
+    await sleep(300);
+  }
+
+  // Deduplicate by date
+  const btcByDate = new Map<string, number>();
+  for (const c of btcCandles) btcByDate.set(c.date, c.close);
+  const btcRows = Array.from(btcByDate.entries()).sort(([a], [b]) => a.localeCompare(b));
+  console.log(`  ✓ ${btcRows.length} days fetched for BTC`);
+
+  if (DB_URL) {
+    const { db } = await import("../../src/db/client");
+    const { priceHistory } = await import("../../src/db/schema");
+    for (const [date, price] of btcRows) {
+      try {
+        await db
+          .insert(priceHistory)
+          .values({
+            ticker: "BTC",
+            ts: new Date(date + "T00:00:00Z"),
+            price: price.toString(),
+            source: "coinbase",
+            isEod: true,
+          })
+          .onConflictDoNothing();
+      } catch {
+        // skip
+      }
+    }
+    console.log(`  ✓ Written to DB`);
   }
 
   console.log("Price backfill complete.");

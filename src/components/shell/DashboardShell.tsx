@@ -9,8 +9,7 @@ export type View =
   | "risk"
   | "rate"
   | "volatility"
-  | "positions"
-  | "tranche";
+  | "positions";
 
 interface DashboardShellProps {
   children: (activeView: View) => React.ReactNode;

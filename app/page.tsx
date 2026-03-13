@@ -7,7 +7,6 @@ import {
   RateEngineView,
   VolatilityView,
   PositionModesView,
-  TrancheProductView,
 } from "@/src/components/views";
 
 const VIEW_COMPONENTS: Record<View, React.FC> = {
@@ -16,7 +15,6 @@ const VIEW_COMPONENTS: Record<View, React.FC> = {
   rate: RateEngineView,
   volatility: VolatilityView,
   positions: PositionModesView,
-  tranche: TrancheProductView,
 };
 
 export default function Home() {

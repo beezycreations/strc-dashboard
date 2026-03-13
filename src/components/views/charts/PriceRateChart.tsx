@@ -11,32 +11,68 @@ import {
   CartesianGrid,
   ReferenceLine,
 } from "recharts";
-import { colors, rechartsDefaults } from "@/src/lib/chart-config";
+import { colors, rechartsDefaults, STRC_IPO_DATE } from "@/src/lib/chart-config";
 
 interface PriceRateChartProps {
   data?: {
     prices?: Array<{ date: string; strc: number }>;
     rates?: Array<{ date: string; strc_rate_pct: number; sofr_1m_pct: number }>;
+    dividends?: Array<{ periodSort: string; ratePct: number }>;
   };
 }
 
 export default function PriceRateChart({ data }: PriceRateChartProps) {
-  if (!data?.prices?.length) {
+  // Filter out pre-IPO data
+  const ipoFilteredPrices = data?.prices?.filter((p) => p.date >= STRC_IPO_DATE);
+
+  if (!data || !ipoFilteredPrices?.length) {
     return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--t3)", fontSize: "var(--text-sm)" }}>Loading chart data...</div>;
   }
 
-  // Merge prices and rates by date
-  const rateMap = new Map(
-    (data.rates ?? []).map((r) => [r.date, r])
-  );
+  // Build rate lookup from dividend schedule (DB-backed, authoritative)
+  // Each dividend has periodSort "YYYY-MM" and ratePct
+  // The new rate takes effect on the record date (15th of the month).
+  // Before the 15th, the prior month's rate is still in effect.
+  const dividendRateByMonth = new Map<string, number>();
+  for (const d of (data.dividends ?? [])) {
+    dividendRateByMonth.set(d.periodSort, d.ratePct);
+  }
 
-  const chartData = data.prices.map((p) => {
-    const rate = rateMap.get(p.date);
+  function prevMonth(ym: string): string {
+    const [y, m] = ym.split("-").map(Number);
+    const pm = m === 1 ? 12 : m - 1;
+    const py = m === 1 ? y - 1 : y;
+    return `${py}-${String(pm).padStart(2, "0")}`;
+  }
+
+  // SOFR lookup from rates array (daily observations)
+  const sofrMap = new Map<string, number>();
+  for (const r of (data.rates ?? [])) {
+    if (r.sofr_1m_pct) sofrMap.set(r.date, r.sofr_1m_pct);
+  }
+
+  // Forward-fill SOFR so every day has a value
+  let lastSofr: number | null = null;
+
+  const chartData = ipoFilteredPrices.map((p) => {
+    const month = p.date.slice(0, 7); // "YYYY-MM"
+    const day = parseInt(p.date.slice(8, 10));
+
+    // Before the 15th (record date), the prior month's rate is in effect
+    const effectiveMonth = day < 15 ? prevMonth(month) : month;
+    const ratePct = dividendRateByMonth.get(effectiveMonth)
+      ?? dividendRateByMonth.get(prevMonth(effectiveMonth))
+      ?? null;
+
+    // Forward-fill SOFR
+    const sofrVal = sofrMap.get(p.date);
+    if (sofrVal != null) lastSofr = sofrVal;
+
     return {
       date: p.date,
       strc: p.strc,
-      rate_pct: rate?.strc_rate_pct ?? null,
-      sofr_pct: rate?.sofr_1m_pct ?? null,
+      rate_pct: ratePct,
+      sofr_pct: lastSofr,
     };
   });
 

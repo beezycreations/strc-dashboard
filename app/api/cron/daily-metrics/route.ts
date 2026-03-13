@@ -97,14 +97,16 @@ export async function GET(request: NextRequest) {
       return rows.map((r) => Number(r.price)).reverse();
     }
 
-    const [strcPrices, strfPrices, strkPrices, strdPrices, mstrPrices, btcPrices] =
+    // Fetch 252 trading days for 1Y vol & Sharpe calculation
+    const [strcPrices, strfPrices, strkPrices, strdPrices, mstrPrices, btcPrices, spyPrices] =
       await Promise.all([
-        getEodPrices("STRC"),
+        getEodPrices("STRC", 260),
         getEodPrices("STRF"),
         getEodPrices("STRK"),
         getEodPrices("STRD"),
         getEodPrices("MSTR"),
         getEodPrices("BTC"),
+        getEodPrices("SPY", 260),
       ]);
 
     // ── mNAV ──
@@ -145,26 +147,27 @@ export async function GET(request: NextRequest) {
       btcCount > 0 ? totalSenior / btcCount : null;
 
     // ── Volatility for all tickers ──
-    const vol30dStrc = strcPrices.length > 30 ? realizedVol(strcPrices, 30) : null;
+    // 21 trading days = 1 calendar month (matches MSTR dashboard methodology)
+    const vol30dStrc = strcPrices.length > 21 ? realizedVol(strcPrices, 21) : null;
     const vol90dStrc = strcPrices.length > 90 ? realizedVol(strcPrices, 90) : null;
     const volRatioStrc =
       vol30dStrc != null && vol90dStrc != null && vol90dStrc > 0
         ? vol30dStrc / vol90dStrc
         : null;
 
-    const vol30dMstr = mstrPrices.length > 30 ? realizedVol(mstrPrices, 30) : null;
+    const vol30dMstr = mstrPrices.length > 21 ? realizedVol(mstrPrices, 21) : null;
     const vol90dMstr = mstrPrices.length > 90 ? realizedVol(mstrPrices, 90) : null;
 
-    const vol30dBtc = btcPrices.length > 30 ? realizedVol(btcPrices, 30) : null;
+    const vol30dBtc = btcPrices.length > 21 ? realizedVol(btcPrices, 21) : null;
     const vol90dBtc = btcPrices.length > 90 ? realizedVol(btcPrices, 90) : null;
 
-    const vol30dStrf = strfPrices.length > 30 ? realizedVol(strfPrices, 30) : null;
+    const vol30dStrf = strfPrices.length > 21 ? realizedVol(strfPrices, 21) : null;
     const vol90dStrf = strfPrices.length > 90 ? realizedVol(strfPrices, 90) : null;
 
-    const vol30dStrk = strkPrices.length > 30 ? realizedVol(strkPrices, 30) : null;
+    const vol30dStrk = strkPrices.length > 21 ? realizedVol(strkPrices, 21) : null;
     const vol90dStrk = strkPrices.length > 90 ? realizedVol(strkPrices, 90) : null;
 
-    const vol30dStrd = strdPrices.length > 30 ? realizedVol(strdPrices, 30) : null;
+    const vol30dStrd = strdPrices.length > 21 ? realizedVol(strdPrices, 21) : null;
     const vol90dStrd = strdPrices.length > 90 ? realizedVol(strdPrices, 90) : null;
 
     // ── Beta & Correlation ──
@@ -229,6 +232,32 @@ export async function GET(request: NextRequest) {
         ? correlation(strcPrices, btcPrices, 90)
         : null;
 
+    // ── Correlation — STRC vs SPY ──
+    const corrStrcSpy30d =
+      strcPrices.length > 30 && spyPrices.length > 30
+        ? correlation(strcPrices, spyPrices, 30)
+        : null;
+
+    // ── 1Y realized vol — STRC (calendar year, matches MSTR dashboard) ──
+    const priorYear = new Date().getFullYear() - 1;
+    const calYearRows = await db
+      .select({ price: priceHistory.price })
+      .from(priceHistory)
+      .where(
+        and(
+          eq(priceHistory.ticker, "STRC"),
+          eq(priceHistory.isEod, true),
+          gte(priceHistory.ts, sql`'${sql.raw(String(priorYear))}-01-01'::timestamptz`),
+          lte(priceHistory.ts, sql`'${sql.raw(String(priorYear))}-12-31T23:59:59'::timestamptz`),
+        ),
+      )
+      .orderBy(priceHistory.ts);
+    const calYearPrices = calYearRows.map(r => Number(r.price)).filter(p => p > 0);
+    // Use calendar year if enough data, else fall back to all available
+    const vol1yPrices = calYearPrices.length > 21 ? calYearPrices : strcPrices;
+    const vol1yWindow = vol1yPrices.length > 21 ? vol1yPrices.length - 1 : 0;
+    const vol1yStrc = vol1yWindow > 0 ? realizedVol(vol1yPrices, vol1yWindow) : null;
+
     // ── MSTR IV (placeholder — will come from options data) ──
     // For now store null; real IV would come from Deribit or FMP options chain
     const mstrIv30d: number | null = null;
@@ -260,6 +289,58 @@ export async function GET(request: NextRequest) {
     const strcParSpreadBps =
       strcEffectiveYield != null && sofrPct != null
         ? (strcEffectiveYield - sofrPct) * 100
+        : null;
+
+    // ── Sharpe Ratio — STRC ──
+    // Sharpe = (annualized return − risk-free rate) / annualized vol
+    const sharpeRatioStrc = (() => {
+      const volForSharpe = vol30dStrc ?? vol1yStrc;
+      if (volForSharpe == null || volForSharpe === 0) return null;
+      const annualReturn = strcEffectiveYield != null ? strcEffectiveYield / 100 : null;
+      const riskFree = sofrPct != null ? sofrPct / 100 : 0;
+      if (annualReturn == null) return null;
+      return (annualReturn - riskFree) / volForSharpe;
+    })();
+
+    // ── STRC market data ──
+    const vwapRows = await db
+      .select({ price: priceHistory.price, volume: priceHistory.volume })
+      .from(priceHistory)
+      .where(
+        and(
+          eq(priceHistory.ticker, "STRC"),
+          eq(priceHistory.isEod, true),
+          gte(priceHistory.ts, sql`now() - interval '30 days'`),
+        ),
+      )
+      .orderBy(desc(priceHistory.ts))
+      .limit(30);
+
+    let strcVwap1m: number | null = null;
+    if (vwapRows.length > 0) {
+      let sumPV = 0;
+      let sumV = 0;
+      for (const row of vwapRows) {
+        const p = Number(row.price);
+        const v = Number(row.volume ?? 0);
+        if (v > 0) {
+          sumPV += p * v;
+          sumV += v;
+        }
+      }
+      strcVwap1m = sumV > 0 ? sumPV / sumV : null;
+    }
+
+    const strcNotionalUsd = Number(latestCapStructure.strcAtmDeployedUsd ?? 0) || null;
+    const strcMarketCapUsd =
+      strcNotionalUsd != null && strcPrice != null
+        ? (strcNotionalUsd / 100) * strcPrice
+        : null;
+
+    const latestVwapRow = vwapRows.length > 0 ? vwapRows[0] : null;
+    const strcTradingVolumeUsd =
+      latestVwapRow && latestVwapRow.volume
+        ? Number(latestVwapRow.volume) * Number(latestVwapRow.price)
         : null;
 
     // ── mNAV regime ──
@@ -319,6 +400,13 @@ export async function GET(request: NextRequest) {
         estConfigC: toStr(estConfigC),
         strcEffectiveYield: toStr(strcEffectiveYield),
         strcParSpreadBps: toStr(strcParSpreadBps),
+        corrStrcSpy30d: toStr(corrStrcSpy30d),
+        sharpeRatioStrc: toStr(sharpeRatioStrc),
+        vol1yStrc: toStr(vol1yStrc),
+        strcVwap1m: toStr(strcVwap1m),
+        strcNotionalUsd: toStr(strcNotionalUsd),
+        strcMarketCapUsd: toStr(strcMarketCapUsd),
+        strcTradingVolumeUsd: toStr(strcTradingVolumeUsd),
       })
       .onConflictDoUpdate({
         target: dailyMetrics.date,
@@ -363,6 +451,13 @@ export async function GET(request: NextRequest) {
           estConfigC: toStr(estConfigC),
           strcEffectiveYield: toStr(strcEffectiveYield),
           strcParSpreadBps: toStr(strcParSpreadBps),
+          corrStrcSpy30d: toStr(corrStrcSpy30d),
+          sharpeRatioStrc: toStr(sharpeRatioStrc),
+          vol1yStrc: toStr(vol1yStrc),
+          strcVwap1m: toStr(strcVwap1m),
+          strcNotionalUsd: toStr(strcNotionalUsd),
+          strcMarketCapUsd: toStr(strcMarketCapUsd),
+          strcTradingVolumeUsd: toStr(strcTradingVolumeUsd),
         },
       });
 

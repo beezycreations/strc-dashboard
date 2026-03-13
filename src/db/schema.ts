@@ -218,6 +218,21 @@ export const dailyMetrics = pgTable(
     strcEffectiveYield: numeric("strc_effective_yield", { precision: 8, scale: 4 }),
     strcParSpreadBps: numeric("strc_par_spread_bps", { precision: 8, scale: 2 }),
 
+    // Correlation — STRC vs SPY
+    corrStrcSpy30d: numeric("corr_strc_spy_30d", { precision: 8, scale: 4 }),
+
+    // Sharpe ratio — STRC
+    sharpeRatioStrc: numeric("sharpe_ratio_strc", { precision: 8, scale: 4 }),
+
+    // 1Y realized vol — STRC
+    vol1yStrc: numeric("vol_1y_strc", { precision: 8, scale: 4 }),
+
+    // STRC market data
+    strcVwap1m: numeric("strc_vwap_1m", { precision: 18, scale: 6 }),
+    strcNotionalUsd: numeric("strc_notional_usd", { precision: 20, scale: 2 }),
+    strcMarketCapUsd: numeric("strc_market_cap_usd", { precision: 20, scale: 2 }),
+    strcTradingVolumeUsd: numeric("strc_trading_volume_usd", { precision: 20, scale: 2 }),
+
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
 );

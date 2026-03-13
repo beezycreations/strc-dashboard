@@ -5,10 +5,10 @@ import Badge from "@/src/components/ui/Badge";
 import { StatRow } from "@/src/components/ui";
 import { fmtPct, fmtBps } from "@/src/lib/utils/format";
 import {
-  ComposedChart, Line, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine,
+  ComposedChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine,
   LineChart, Legend,
 } from "recharts";
-import { colors, rechartsDefaults } from "@/src/lib/chart-config";
+import { colors, rechartsDefaults, STRC_IPO_DATE } from "@/src/lib/chart-config";
 
 export default function RateEngineView() {
   const { data: snap, isLoading } = useSnapshot();
@@ -19,17 +19,59 @@ export default function RateEngineView() {
   }
 
   const s = snap;
-  const rates = history?.rates ?? [];
+  const rawRates = history?.rates ?? [];
   const sofrForward = history?.sofr_forward ?? [];
+  const dividends = history?.dividends ?? [];
+
+  // Build rate lookup from dividend schedule (authoritative, DB-backed)
+  // Rate takes effect on record date (15th). Before 15th, prior month's rate applies.
+  const divRateByMonth = new Map<string, number>();
+  for (const d of (dividends as Array<{ periodSort: string; ratePct: number }>)) {
+    divRateByMonth.set(d.periodSort, d.ratePct);
+  }
+  function prevMonth(ym: string): string {
+    const [y, m] = ym.split("-").map(Number);
+    const pm = m === 1 ? 12 : m - 1;
+    const py = m === 1 ? y - 1 : y;
+    return `${py}-${String(pm).padStart(2, "0")}`;
+  }
+
+  // Enrich rates with dividend-schedule rate and spread (filter out pre-IPO data)
+  const rates = (rawRates as Array<{ date: string; strc_rate_pct: number; sofr_1m_pct: number }>).filter((r) => r.date >= STRC_IPO_DATE).map((r) => {
+    const month = r.date.slice(0, 7);
+    const day = parseInt(r.date.slice(8, 10));
+    const effectiveMonth = day < 15 ? prevMonth(month) : month;
+    const divRate = divRateByMonth.get(effectiveMonth) ?? divRateByMonth.get(prevMonth(effectiveMonth)) ?? r.strc_rate_pct;
+    return {
+      ...r,
+      strc_rate_pct: divRate,
+      spread: parseFloat((divRate - r.sofr_1m_pct).toFixed(2)),
+    };
+  });
 
   // Rate floor projection (12 months, 3 scenarios)
-  const projectionData = Array.from({ length: 13 }, (_, m) => ({
-    month: m,
-    bear: Math.max(s.sofr_1m_pct, s.strc_rate_pct - m * 0.25),
-    base: Math.max(s.sofr_1m_pct - 0.5, s.strc_rate_pct - m * 0.25),
-    bull: Math.max(s.sofr_1m_pct - 1.0, s.strc_rate_pct - m * 0.25),
-    current: m === 0 ? s.strc_rate_pct : undefined,
-  }));
+  // STRC rate = SOFR + spread. Scenarios model different SOFR cut paths.
+  const spread = s.strc_rate_pct - s.sofr_1m_pct;
+  const projectionData = Array.from({ length: 13 }, (_, m) => {
+    // Bear: SOFR rises 50bps over 12mo (hawkish Fed)
+    const bearSofr = s.sofr_1m_pct + m * (0.5 / 12);
+    // Base: SOFR declines 100bps over 12mo (gradual easing)
+    const baseSofr = Math.max(0, s.sofr_1m_pct - m * (1.0 / 12));
+    // Bull: SOFR declines 250bps over 12mo (aggressive cuts)
+    const bullSofr = Math.max(0, s.sofr_1m_pct - m * (2.5 / 12));
+
+    return {
+      month: m,
+      bear: parseFloat((bearSofr + spread).toFixed(2)),
+      base: parseFloat((baseSofr + spread).toFixed(2)),
+      bull: parseFloat((bullSofr + spread).toFixed(2)),
+    };
+  });
+
+  // Auto-scale Y-axis to fit projection data with padding
+  const allProjectionValues = projectionData.flatMap((d) => [d.bear, d.base, d.bull]);
+  const projYMin = Math.floor(Math.min(...allProjectionValues) - 0.5);
+  const projYMax = Math.ceil(Math.max(...allProjectionValues) + 0.5);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -41,42 +83,101 @@ export default function RateEngineView() {
         <span className="badge badge-neutral">{fmtBps(s.strc_rate_since_ipo_bps)} since IPO</span>
       </div>
 
-      {/* Rate History chart | Announcement Log */}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "var(--card-gap)" }}>
-        <div className="card">
-          <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Rate History</div>
-          <div style={{ height: 280 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={rates} margin={{ top: 5, right: 20, bottom: 5, left: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: string) => v.slice(2, 7)} interval="preserveStartEnd" />
-                <YAxis domain={[0, 14]} tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
-                <Tooltip contentStyle={rechartsDefaults.tooltipStyle} />
-                <Bar dataKey="strc_rate_pct" name="STRC Rate" fill={colors.violet} opacity={0.7} barSize={8} />
-                <Line type="stepAfter" dataKey="sofr_1m_pct" name="SOFR 1M" stroke={colors.accent} strokeDasharray="4 4" strokeWidth={1.5} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
+      {/* Rate History chart */}
+      <div className="card">
+        <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Rate History</div>
+        <div style={{ height: 280 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={rates} margin={{ top: 5, right: 20, bottom: 5, left: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: string) => v.slice(2, 7)} interval="preserveStartEnd" />
+              <YAxis domain={[0, 14]} tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
+              <Tooltip contentStyle={rechartsDefaults.tooltipStyle} />
+              <Line type="stepAfter" dataKey="strc_rate_pct" name="STRC Rate" stroke={colors.violet} strokeWidth={2} dot={false} />
+              <Line type="stepAfter" dataKey="sofr_1m_pct" name="SOFR 1M" stroke={colors.accent} strokeDasharray="4 4" strokeWidth={1.5} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
         </div>
+      </div>
 
-        <div className="card">
-          <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Announcements</div>
-          <div style={{ maxHeight: 260, overflowY: "auto" }}>
-            {rates.length > 0 ? (
-              [...rates].reverse().filter((_: unknown, i: number) => {
-                if (i === 0) return true;
-                const reversed = [...rates].reverse() as Array<{ strc_rate_pct: number }>;
-                return reversed[i]?.strc_rate_pct !== reversed[i - 1]?.strc_rate_pct;
-              }).slice(0, 20).map((r: { date: string; strc_rate_pct: number }, i: number) => (
-                <div key={i} style={{ display: "flex", gap: 8, padding: "6px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-sm)" }}>
-                  <span style={{ color: "var(--t3)", minWidth: 70 }}>{r.date}</span>
-                  <span className="mono" style={{ fontWeight: 600, color: "var(--violet)" }}>{fmtPct(r.strc_rate_pct)}</span>
-                </div>
-              ))
-            ) : (
-              <div style={{ color: "var(--t3)", fontSize: "var(--text-sm)" }}>No rate history available</div>
+      {/* Dividend Schedule Table */}
+      <div className="card" style={{ overflowX: "auto" }}>
+        <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Dividend Schedule</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "var(--text-sm)" }}>
+          <thead>
+            <tr style={{ borderBottom: "2px solid var(--border)" }}>
+              {["Dividend Period", "Record Date", "Payout Date", "Dividend Rate", "Dividend/Share"].map((h) => (
+                <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: "var(--t3)", fontWeight: 500, fontSize: "var(--text-xs)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dividends.length > 0 ? dividends.map((d: { period: string; periodSort: string; recordDate: string; payoutDate: string; ratePct: number; dividendPerShare: number; isCurrent: boolean; isProRated?: boolean }) => (
+              <tr key={d.periodSort} style={{ borderBottom: "1px solid var(--border)", color: d.isCurrent ? "var(--accent)" : "var(--t1)" }}>
+                <td style={{ padding: "8px 12px", fontWeight: 600 }}>
+                  {d.period}{d.isProRated ? <sup style={{ fontSize: "var(--text-xs)" }}>*</sup> : null}
+                </td>
+                <td className="mono" style={{ padding: "8px 12px" }}>{d.recordDate}</td>
+                <td className="mono" style={{ padding: "8px 12px" }}>{d.payoutDate}</td>
+                <td className="mono" style={{ padding: "8px 12px", fontWeight: 600 }}>{d.ratePct.toFixed(2)}%</td>
+                <td className="mono" style={{ padding: "8px 12px", fontWeight: 600 }}>${d.dividendPerShare.toFixed(2)}</td>
+              </tr>
+            )) : (
+              <tr><td colSpan={5} style={{ padding: "12px", color: "var(--t3)" }}>No dividend data available</td></tr>
             )}
-          </div>
+          </tbody>
+        </table>
+        <div style={{ marginTop: 12, fontSize: "var(--text-xs)", color: "var(--t3)", fontStyle: "italic", lineHeight: 1.5 }}>
+          All expected payout and record dates are subject to declaration of dividend by the board of directors.
+          Dividends with non-business-day Payout Dates are paid on the next business day.<br />
+          * Accrued from July 29, 2025 through August 31, 2025.
+        </div>
+      </div>
+
+      {/* Spread over SOFR */}
+      <div className="card">
+        <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>
+          Spread over SOFR
+          <span className="mono" style={{ marginLeft: 8, fontSize: "var(--text-sm)", color: "var(--amber)", fontWeight: 600 }}>
+            {spread.toFixed(2)}% current
+          </span>
+        </div>
+        <div style={{ height: 220 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={rates} margin={{ top: 5, right: 20, bottom: 5, left: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: string) => v.slice(2, 7)} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
+              <Tooltip
+                contentStyle={rechartsDefaults.tooltipStyle}
+                formatter={(v: unknown, name: unknown) => {
+                  const val = Number(v);
+                  switch (String(name)) {
+                    case "spread": return [`${val.toFixed(2)}%`, "Spread"];
+                    case "strc_rate_pct": return [`${val.toFixed(2)}%`, "STRC Rate"];
+                    case "sofr_1m_pct": return [`${val.toFixed(2)}%`, "SOFR 1M"];
+                    default: return [`${val}%`, String(name)];
+                  }
+                }}
+              />
+              <Legend
+                verticalAlign="top"
+                align="right"
+                wrapperStyle={{ fontSize: 11, fontFamily: rechartsDefaults.fontFamily, paddingBottom: 8 }}
+                formatter={(value: string) => {
+                  switch (value) {
+                    case "spread": return "Spread (STRC − SOFR)";
+                    case "strc_rate_pct": return "STRC Rate";
+                    case "sofr_1m_pct": return "SOFR 1M";
+                    default: return value;
+                  }
+                }}
+              />
+              <Line type="stepAfter" dataKey="strc_rate_pct" stroke={colors.violet} strokeWidth={1.5} dot={false} opacity={0.4} />
+              <Line type="stepAfter" dataKey="sofr_1m_pct" stroke={colors.accent} strokeWidth={1.5} strokeDasharray="4 4" dot={false} opacity={0.4} />
+              <Line type="stepAfter" dataKey="spread" stroke={colors.amber} strokeWidth={2.5} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
@@ -111,18 +212,18 @@ export default function RateEngineView() {
               <LineChart data={projectionData} margin={{ top: 5, right: 20, bottom: 5, left: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
                 <XAxis dataKey="month" tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `M+${v}`} />
-                <YAxis domain={[2, 14]} tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
-                <Tooltip contentStyle={rechartsDefaults.tooltipStyle} />
-                <Line type="stepAfter" dataKey="bear" name="Bear (SOFR flat)" stroke={colors.red} strokeWidth={1.5} dot={false} />
-                <Line type="stepAfter" dataKey="base" name="Base (SOFR -50bps)" stroke={colors.amber} strokeWidth={1.5} dot={false} />
-                <Line type="stepAfter" dataKey="bull" name="Bull (SOFR -100bps)" stroke={colors.green} strokeWidth={1.5} dot={false} />
+                <YAxis domain={[projYMin, projYMax]} tick={{ fontSize: 10, fill: colors.t3 }} tickFormatter={(v: number) => `${v}%`} />
+                <Tooltip contentStyle={rechartsDefaults.tooltipStyle} formatter={(v: unknown) => [`${Number(v).toFixed(2)}%`]} />
+                <Line type="stepAfter" dataKey="bear" name="Bear (SOFR +50bps)" stroke={colors.red} strokeWidth={2} dot={false} />
+                <Line type="stepAfter" dataKey="base" name="Base (-100bps)" stroke={colors.amber} strokeWidth={2} dot={false} strokeDasharray="6 3" />
+                <Line type="stepAfter" dataKey="bull" name="Bull (-250bps)" stroke={colors.green} strokeWidth={2} dot={false} strokeDasharray="3 3" />
               </LineChart>
             </ResponsiveContainer>
           </div>
           <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: "var(--text-xs)" }}>
-            <span style={{ color: colors.red }}>Bear (SOFR flat)</span>
-            <span style={{ color: colors.amber }}>Base (-50bps)</span>
-            <span style={{ color: colors.green }}>Bull (-100bps)</span>
+            <span style={{ color: colors.red }}>Bear (SOFR +50bps)</span>
+            <span style={{ color: colors.amber }}>Base (-100bps)</span>
+            <span style={{ color: colors.green }}>Bull (-250bps)</span>
           </div>
         </div>
       </div>

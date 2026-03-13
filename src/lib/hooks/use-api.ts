@@ -23,12 +23,6 @@ export function useVolatility() {
   });
 }
 
-export function useTranche() {
-  return useSWR("/api/data/tranche", fetcher, {
-    revalidateOnFocus: false,
-  });
-}
-
 export function useOptions(asset: "mstr" | "btc", expiry: "30d" | "60d" | "90d") {
   return useSWR(`/api/data/options?asset=${asset}&expiry=${expiry}`, fetcher, {
     refreshInterval: 5 * 60_000,

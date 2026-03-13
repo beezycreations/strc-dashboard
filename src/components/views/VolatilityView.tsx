@@ -7,6 +7,26 @@ import { fmtPct, fmtMultiple } from "@/src/lib/utils/format";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { colors, rechartsDefaults } from "@/src/lib/chart-config";
 
+function AsOf({ ts }: { ts?: string }) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  let label: string;
+  if (diffMins < 1) label = "just now";
+  else if (diffMins < 60) label = `${diffMins}m ago`;
+  else if (diffMins < 1440) label = `${Math.floor(diffMins / 60)}h ago`;
+  else label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+  return (
+    <span style={{ fontSize: "var(--text-xs)", color: "var(--t3)", fontWeight: 400 }} title={`${timeStr}`}>
+      as of {label}
+    </span>
+  );
+}
+
 export default function VolatilityView() {
   const { data: vol, isLoading } = useVolatility();
   const { data: history } = useHistory("3m");
@@ -17,49 +37,71 @@ export default function VolatilityView() {
 
   const instruments = vol.instruments ?? [];
   const corrHistory = vol.corr_history ?? history?.corr ?? [];
+  const strcMetrics = vol.strc_metrics ?? { sharpe_ratio: null, corr_btc: null, corr_spy: null, vol_1y: null, vol_1y_days: null, vol_1y_is_calendar: false };
+  const strcInst = instruments.find((i: { ticker: string }) => i.ticker === "STRC");
+  const lastUpdated = vol.last_updated;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ fontSize: "var(--text-lg)", fontWeight: 600 }}>Volatility & Beta Matrix</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+        <div style={{ fontSize: "var(--text-lg)", fontWeight: 600 }}>Volatility & Beta Matrix</div>
+        <AsOf ts={lastUpdated} />
+      </div>
+
+      {vol.data_available === false && (
+        <div style={{ padding: "10px 14px", borderRadius: "var(--r-xs)", background: "var(--amber-l)", color: "var(--amber)", fontSize: "var(--text-sm)", fontWeight: 500 }}>
+          No price data available — add <code style={{ background: "rgba(0,0,0,0.06)", padding: "1px 4px", borderRadius: 3 }}>FMP_API_KEY</code> to <code style={{ background: "rgba(0,0,0,0.06)", padding: "1px 4px", borderRadius: 3 }}>.env.local</code> to enable live market data
+        </div>
+      )}
+
+      {/* STRC Key Metrics */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "var(--card-gap)" }}>
+        <MetricCard label="Sharpe Ratio" value={strcMetrics.sharpe_ratio != null ? strcMetrics.sharpe_ratio.toFixed(2) : null} color="var(--accent)" ts={lastUpdated} />
+        <MetricCard label="BTC Correlation" value={strcMetrics.corr_btc != null ? fmtPct(strcMetrics.corr_btc * 100, 0) : null} color="var(--btc)" ts={lastUpdated} />
+        <MetricCard label="SPY Correlation" value={strcMetrics.corr_spy != null ? fmtPct(strcMetrics.corr_spy * 100, 0) : null} color="var(--t2)" ts={lastUpdated} />
+        <MetricCard label="Hist Volatility 30D" value={strcInst?.vol_30d != null ? fmtPct(strcInst.vol_30d) : null} color="var(--violet)" ts={lastUpdated} />
+        <MetricCard label={strcMetrics.vol_1y_is_calendar ? "Hist Volatility (1Y)" : strcMetrics.vol_1y_days != null ? `Hist Volatility (${strcMetrics.vol_1y_days}d)` : "Hist Volatility (1Y)"} value={strcMetrics.vol_1y != null ? fmtPct(strcMetrics.vol_1y) : null} color="var(--amber)" ts={lastUpdated} />
+      </div>
 
       {/* Vol + Beta Matrix Table */}
       <div className="card" style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "var(--text-sm)" }}>
           <thead>
             <tr style={{ borderBottom: "2px solid var(--border)" }}>
-              {["Ticker", "σ30d", "σ90d", "Vol Ratio", "IV(30d)", "β/BTC", "β/MSTR", "Signal"].map((h) => (
+              {["Ticker", "σ30d", "σ90d", "Vol Ratio", "β/BTC", "β/MSTR", "Signal"].map((h) => (
                 <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: "var(--t3)", fontWeight: 500, fontSize: "var(--text-xs)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {instruments.map((inst: { ticker: string; vol_30d: number; vol_90d: number; vol_ratio: number; iv: number | null; beta_btc_30d: number | null; beta_mstr_30d: number | null; signal: string }) => {
+            {instruments.map((inst: { ticker: string; vol_30d: number | null; vol_90d: number | null; vol_ratio: number | null; beta_btc_30d: number | null; beta_mstr_30d: number | null; signal: string | null }) => {
               const isSpy = inst.ticker === "SPY";
               return (
                 <tr key={inst.ticker} style={{ borderBottom: "1px solid var(--border)", opacity: isSpy ? 0.6 : 1 }}>
                   <td style={{ padding: "8px 10px", fontWeight: 600 }}>{inst.ticker}</td>
-                  <td className="mono" style={{ padding: "8px 10px" }}>{fmtPct(inst.vol_30d)}</td>
-                  <td className="mono" style={{ padding: "8px 10px" }}>{fmtPct(inst.vol_90d)}</td>
+                  <td className="mono" style={{ padding: "8px 10px" }}>{inst.vol_30d != null ? fmtPct(inst.vol_30d) : "—"}</td>
+                  <td className="mono" style={{ padding: "8px 10px" }}>{inst.vol_90d != null ? fmtPct(inst.vol_90d) : "—"}</td>
                   <td className="mono" style={{ padding: "8px 10px" }}>
-                    <span style={{
-                      padding: "1px 6px",
-                      borderRadius: "var(--r-xs)",
-                      background: inst.vol_ratio > 1.5 ? "var(--amber-l)" : "transparent",
-                      color: inst.vol_ratio > 1.5 ? "var(--amber)" : "var(--t1)",
-                      fontWeight: 600,
-                    }}>
-                      {inst.vol_ratio.toFixed(2)}
-                    </span>
-                  </td>
-                  <td className="mono" style={{ padding: "8px 10px", color: "var(--violet)" }}>
-                    {inst.iv != null ? fmtPct(inst.iv) : "—"}
+                    {inst.vol_ratio != null ? (
+                      <span style={{
+                        padding: "1px 6px",
+                        borderRadius: "var(--r-xs)",
+                        background: inst.vol_ratio > 1.5 ? "var(--amber-l)" : "transparent",
+                        color: inst.vol_ratio > 1.5 ? "var(--amber)" : "var(--t1)",
+                        fontWeight: 600,
+                      }}>
+                        {inst.vol_ratio.toFixed(2)}
+                      </span>
+                    ) : "—"}
                   </td>
                   <td className="mono" style={{ padding: "8px 10px" }}>{inst.beta_btc_30d != null ? inst.beta_btc_30d.toFixed(2) : "—"}</td>
                   <td className="mono" style={{ padding: "8px 10px" }}>{inst.beta_mstr_30d != null ? inst.beta_mstr_30d.toFixed(2) : "—"}</td>
                   <td style={{ padding: "8px 10px" }}>
-                    <Badge variant={inst.signal === "stress" ? "red" : inst.signal === "watch" ? "amber" : "green"}>
-                      {inst.signal}
-                    </Badge>
+                    {inst.signal != null ? (
+                      <Badge variant={inst.signal === "stress" ? "red" : inst.signal === "watch" ? "amber" : "green"}>
+                        {inst.signal}
+                      </Badge>
+                    ) : <span style={{ color: "var(--t3)" }}>—</span>}
                   </td>
                 </tr>
               );
@@ -86,7 +128,7 @@ export default function VolatilityView() {
               </ResponsiveContainer>
             ) : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--t3)", fontSize: "var(--text-sm)" }}>
-                Correlation data loading...
+                {vol.data_available === false ? "No price data available — check FMP_API_KEY" : "Correlation data loading..."}
               </div>
             )}
           </div>
@@ -111,6 +153,20 @@ export default function VolatilityView() {
             source="β × Deribit 30d IV"
           />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, color, ts }: { label: string; value: string | null; color: string; ts?: string }) {
+  return (
+    <div className="card" style={{ padding: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)" }}>{label}</div>
+        {value != null && <AsOf ts={ts} />}
+      </div>
+      <div className="mono" style={{ fontSize: "var(--text-xl)", fontWeight: 600, color: value != null ? color : "var(--t3)" }}>
+        {value ?? "N/A"}
       </div>
     </div>
   );

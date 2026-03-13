@@ -3,82 +3,146 @@ import { desc, gte } from "drizzle-orm";
 
 export const revalidate = 0;
 
-function generateMockVolumeHistory(days: number) {
-  const history: { date: string; strc_volume: number; strc_price: number; mstr_volume: number }[] = [];
+// ── Seeded random for deterministic mock data ────────────────────────
+// Simple mulberry32 PRNG so mock data is stable across requests
+function seededRng(seed: number) {
+  let s = seed;
+  return () => {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ── Consistent mock data: volume drives ATM events ───────────────────
+// The participation rate in the mock must match DEFAULT_PARTICIPATION_RATE (3.0%)
+// so that the backtest formula can be validated against internally consistent data.
+const MOCK_PARTICIPATION_RATE = 0.030;
+const MOCK_NOISE_RANGE = 0.15; // ±15% noise on actual vs estimated (realistic error)
+
+function generateMockData() {
+  const rng = seededRng(42);
+
+  // Step 1: Generate volume history (90 trading days)
+  const volumeHistory: { date: string; strc_volume: number; strc_price: number; mstr_volume: number }[] = [];
   const now = new Date();
   let strcPrice = 99.5;
 
-  for (let i = days; i >= 0; i--) {
+  for (let i = 90; i >= 0; i--) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
-    // Skip weekends
     if (d.getDay() === 0 || d.getDay() === 6) continue;
 
-    strcPrice = Math.max(96, Math.min(105, strcPrice + (Math.random() - 0.48) * 0.4));
-    const baseVol = 2_800_000 + Math.random() * 2_000_000;
-    // Volume spikes near month end (rate announcement)
+    strcPrice = Math.max(96, Math.min(105, strcPrice + (rng() - 0.48) * 0.4));
+    const baseVol = 2_800_000 + rng() * 2_000_000;
     const dayOfMonth = d.getDate();
     const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
     const nearMonthEnd = monthEnd - dayOfMonth < 5;
-    const volMultiplier = nearMonthEnd ? 1.5 + Math.random() * 0.8 : 1.0;
+    const volMultiplier = nearMonthEnd ? 1.5 + rng() * 0.8 : 1.0;
 
-    history.push({
+    volumeHistory.push({
       date: d.toISOString().slice(0, 10),
       strc_volume: Math.floor(baseVol * volMultiplier),
       strc_price: +strcPrice.toFixed(2),
-      mstr_volume: Math.floor(15_000_000 + Math.random() * 20_000_000),
+      mstr_volume: Math.floor(15_000_000 + rng() * 20_000_000),
     });
   }
-  return history;
-}
 
-function generateMockCumulativeAtm() {
-  const data: { date: string; strc_cumulative_usd: number; mstr_cumulative_usd: number }[] = [];
-  const now = new Date();
+  // Step 2: Generate ATM events DERIVED from volume data.
+  // Confirmed 8-K events cover a period of ~5 trading days each.
+  // The "actual" proceeds = sum of (volume × true_participation × price) + noise.
+  // This makes the mock data internally consistent with our estimation methodology.
+  const confirmedDates: string[] = [];
+  const tradingDays = volumeHistory.map((v) => v.date);
+
+  // Place confirmed 8-Ks roughly every 5 trading days
+  for (let i = 4; i < tradingDays.length - 5; i += 5) {
+    confirmedDates.push(tradingDays[i]);
+  }
+  // Keep last ~6 as confirmed (rest would be too many periods)
+  const recentConfirmed = confirmedDates.slice(-6);
+
+  const atmEvents: Array<{
+    date: string; ticker: string; proceeds_usd: number;
+    shares_issued: number; avg_price: number; is_estimated: boolean;
+  }> = [];
+
+  for (let ci = 0; ci < recentConfirmed.length; ci++) {
+    const endDate = recentConfirmed[ci];
+    const startDate = ci > 0
+      ? recentConfirmed[ci - 1]
+      : tradingDays[Math.max(0, tradingDays.indexOf(endDate) - 5)];
+
+    // Sum volume-based proceeds for the period
+    const periodDays = volumeHistory.filter(
+      (v) => v.date > startDate && v.date <= endDate
+    );
+    let periodProceeds = 0;
+    let totalShares = 0;
+    let weightedPrice = 0;
+    for (const day of periodDays) {
+      const dayProceeds = day.strc_volume * MOCK_PARTICIPATION_RATE * day.strc_price;
+      periodProceeds += dayProceeds;
+      totalShares += Math.floor(day.strc_volume * MOCK_PARTICIPATION_RATE);
+      weightedPrice += day.strc_price * dayProceeds;
+    }
+    const avgPrice = periodProceeds > 0 ? weightedPrice / periodProceeds : 100;
+
+    // Add realistic noise: actual differs from formula by ±15%
+    const noise = 1 + (rng() - 0.5) * 2 * MOCK_NOISE_RANGE;
+    const actualProceeds = Math.round(periodProceeds * noise);
+
+    atmEvents.push({
+      date: endDate,
+      ticker: "STRC",
+      proceeds_usd: actualProceeds,
+      shares_issued: Math.round(totalShares * noise),
+      avg_price: +avgPrice.toFixed(2),
+      is_estimated: false,
+    });
+  }
+
+  // Add a few estimated (non-confirmed) events for recent days after last confirmed
+  const lastConfirmedDate = recentConfirmed[recentConfirmed.length - 1];
+  const recentUnconfirmed = volumeHistory.filter((v) => v.date > lastConfirmedDate);
+  for (const day of recentUnconfirmed) {
+    const dayProceeds = day.strc_volume * MOCK_PARTICIPATION_RATE * day.strc_price;
+    atmEvents.push({
+      date: day.date,
+      ticker: "STRC",
+      proceeds_usd: Math.round(dayProceeds),
+      shares_issued: Math.floor(day.strc_volume * MOCK_PARTICIPATION_RATE),
+      avg_price: day.strc_price,
+      is_estimated: true,
+    });
+  }
+
+  // Step 3: Generate cumulative ATM from volume
   let strcCum = 2_800_000_000;
   let mstrCum = 15_000_000_000;
-
-  for (let i = 180; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    if (d.getDay() === 0 || d.getDay() === 6) continue;
-
-    // Occasional issuance days
-    if (Math.random() < 0.35) {
-      strcCum += Math.floor(5_000_000 + Math.random() * 25_000_000);
-    }
-    if (Math.random() < 0.4) {
-      mstrCum += Math.floor(20_000_000 + Math.random() * 120_000_000);
-    }
-
-    data.push({
-      date: d.toISOString().slice(0, 10),
+  const cumulativeAtm = volumeHistory.map((v) => {
+    strcCum += Math.round(v.strc_volume * MOCK_PARTICIPATION_RATE * v.strc_price);
+    mstrCum += Math.round(v.mstr_volume * 0.008 * 350); // ~0.8% of MSTR vol × $350
+    return {
+      date: v.date,
       strc_cumulative_usd: strcCum,
       mstr_cumulative_usd: mstrCum,
-    });
-  }
-  return data;
+    };
+  });
+
+  // Sort events newest first for display
+  atmEvents.sort((a, b) => b.date.localeCompare(a.date));
+
+  return { volumeHistory, cumulativeAtm, atmEvents };
 }
 
-function generateMockAtmEvents() {
-  return [
-    { date: "2026-03-10", ticker: "STRC", proceeds_usd: 18_500_000, shares_issued: 184_000, avg_price: 100.54, is_estimated: true },
-    { date: "2026-03-07", ticker: "STRC", proceeds_usd: 12_300_000, shares_issued: 122_500, avg_price: 100.41, is_estimated: true },
-    { date: "2026-03-05", ticker: "STRC", proceeds_usd: 22_100_000, shares_issued: 220_000, avg_price: 100.45, is_estimated: false },
-    { date: "2026-03-03", ticker: "STRC", proceeds_usd: 8_700_000, shares_issued: 86_800, avg_price: 100.23, is_estimated: true },
-    { date: "2026-02-28", ticker: "STRC", proceeds_usd: 31_200_000, shares_issued: 311_000, avg_price: 100.32, is_estimated: false },
-    { date: "2026-02-26", ticker: "STRC", proceeds_usd: 15_400_000, shares_issued: 153_500, avg_price: 100.33, is_estimated: true },
-    { date: "2026-02-24", ticker: "STRC", proceeds_usd: 19_800_000, shares_issued: 197_200, avg_price: 100.41, is_estimated: true },
-    { date: "2026-02-21", ticker: "STRC", proceeds_usd: 14_200_000, shares_issued: 141_500, avg_price: 100.35, is_estimated: true },
-    { date: "2026-02-19", ticker: "STRC", proceeds_usd: 25_600_000, shares_issued: 255_000, avg_price: 100.39, is_estimated: false },
-    { date: "2026-02-14", ticker: "STRC", proceeds_usd: 11_900_000, shares_issued: 118_700, avg_price: 100.25, is_estimated: true },
-  ];
-}
+const mockData = generateMockData();
 
 const MOCK_RESPONSE = {
-  volume_history: generateMockVolumeHistory(90),
-  cumulative_atm: generateMockCumulativeAtm(),
-  atm_events: generateMockAtmEvents(),
+  volume_history: mockData.volumeHistory,
+  cumulative_atm: mockData.cumulativeAtm,
+  atm_events: mockData.atmEvents,
   kpi: {
     strc_volume_today: 4_200_000,
     strc_volume_avg_5d: 3_800_000,
@@ -94,7 +158,7 @@ const MOCK_RESPONSE = {
     mstr_atm_authorized_usd: 21_000_000_000,
     mstr_atm_remaining_usd: 3_000_000_000,
     mstr_atm_pct_deployed: 85.71,
-    participation_rate_current: 0.032,
+    participation_rate_current: 0.030,
     participation_rate_range: [0.018, 0.045],
     est_days_to_exhaustion: 63,
   },

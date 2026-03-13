@@ -6,5 +6,4 @@ export { default as SignalPanel, deriveSignal } from "./SignalPanel";
 export { default as CountdownChip } from "./CountdownChip";
 export { default as CapitalStackBar } from "./CapitalStackBar";
 export { default as CoverageMatrix } from "./CoverageMatrix";
-export { default as TrancheSensitivityTable } from "./TrancheSensitivityTable";
 export { default as RiskScoreGauge } from "./RiskScoreGauge";

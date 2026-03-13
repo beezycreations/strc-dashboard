@@ -109,17 +109,7 @@ export default function CapitalStackBar({ segments, btcNav, highlightTicker }: C
           );
         })()}
 
-        {/* BTC NAV marker */}
-        {btcNav > 0 && (() => {
-          const navPct = Math.min(100, (btcNav / totalNotional) * 100);
-          return (
-            <div style={{ position: "absolute", left: `${navPct}%`, top: -8, bottom: -8, borderLeft: "2px dashed var(--btc)", pointerEvents: "none" }}>
-              <span className="mono" style={{ position: "absolute", top: -16, left: 4, fontSize: "var(--text-xs)", color: "var(--btc-d)", whiteSpace: "nowrap" }}>
-                BTC NAV ${(btcNav / 1e9).toFixed(1)}B
-              </span>
-            </div>
-          );
-        })()}
+        {/* BTC NAV marker removed — was overflowing card */}
       </div>
 
       {/* Seniority arrow */}

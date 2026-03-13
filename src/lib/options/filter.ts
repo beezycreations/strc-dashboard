@@ -126,6 +126,84 @@ export function filterMstrChain(
   });
 }
 
+/** Filter Tradier MSTR options to puts, ATM ± 5 strikes */
+export function filterTradierChain(
+  contracts: Array<{
+    symbol: string;
+    strike: number;
+    bid: number;
+    ask: number;
+    last: number;
+    option_type: string;
+    expiration_date: string;
+    open_interest: number;
+    volume: number;
+    greeks?: {
+      delta: number;
+      theta: number;
+      mid_iv: number;
+      smv_vol: number;
+    };
+  }>,
+  spotPrice: number,
+  expiryWindow: "30d" | "60d" | "90d"
+): OptionRow[] {
+  const now = new Date();
+
+  // Filter puts only
+  const puts = contracts.filter((c) => c.option_type === "put");
+  if (puts.length === 0) return [];
+
+  // All contracts share same expiration (we pre-selected it), compute DTE
+  const expDate = puts[0].expiration_date;
+  const dte = Math.floor((new Date(expDate).getTime() - now.getTime()) / 86400000);
+
+  // Filter strikes to ±20% of spot
+  const filtered = puts
+    .filter((c) => c.strike >= spotPrice * 0.8 && c.strike <= spotPrice * 1.2)
+    .sort((a, b) => a.strike - b.strike);
+
+  // Find ATM strike
+  let atmStrike = 0;
+  let minDiff = Infinity;
+  for (const c of filtered) {
+    const diff = Math.abs(c.strike - spotPrice);
+    if (diff < minDiff) {
+      minDiff = diff;
+      atmStrike = c.strike;
+    }
+  }
+
+  // Take ATM ± 5
+  const atmIdx = filtered.findIndex((c) => c.strike === atmStrike);
+  const start = Math.max(0, atmIdx - 5);
+  const end = Math.min(filtered.length, atmIdx + 6);
+  const slice = filtered.slice(start, end);
+
+  return slice.map((c) => {
+    const bid = c.bid ?? 0;
+    const ask = c.ask ?? 0;
+    const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : c.last ?? 0;
+    const iv = (c.greeks?.mid_iv ?? c.greeks?.smv_vol ?? 0) * 100;
+    const delta = c.greeks?.delta ?? 0;
+    const theta = c.greeks?.theta ?? undefined;
+
+    return {
+      strike: c.strike,
+      bid,
+      ask,
+      mid: +mid.toFixed(2),
+      iv: +iv.toFixed(1),
+      delta: +delta.toFixed(3),
+      theta: theta != null ? +theta.toFixed(3) : undefined,
+      oi: c.open_interest ?? 0,
+      volume: c.volume ?? 0,
+      dte,
+      is_atm: c.strike === atmStrike,
+    };
+  });
+}
+
 /** Parse Deribit instrument name: BTC-28MAR26-70000-P */
 export function parseDeribitName(name: string) {
   const parts = name.split("-");
@@ -203,14 +281,14 @@ export function filterDeribitChain(
 
   return filtered.map((p) => ({
     strike: p.parsed.strike,
-    bid: p.bid_price * btcSpot,
-    ask: p.ask_price * btcSpot,
-    mid: p.mid_price * btcSpot,
-    mid_btc: p.mid_price,
-    iv: p.mark_iv,
-    delta: p.delta,
-    oi: p.open_interest,
-    volume: p.volume,
+    bid: (p.bid_price ?? 0) * btcSpot,
+    ask: (p.ask_price ?? 0) * btcSpot,
+    mid: (p.mid_price ?? 0) * btcSpot,
+    mid_btc: p.mid_price ?? 0,
+    iv: p.mark_iv ?? 0,
+    delta: p.delta ?? 0,
+    oi: p.open_interest ?? 0,
+    volume: p.volume ?? 0,
     instrument_name: p.instrument_name,
     dte: target.dte,
     is_atm: p.parsed.strike === atmStrike,

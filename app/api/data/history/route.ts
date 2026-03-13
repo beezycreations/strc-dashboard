@@ -3,27 +3,55 @@ import { desc, gte } from "drizzle-orm";
 
 export const revalidate = 0;
 
+const STRC_IPO_DATE = "2025-07-29";
+
 function generateMockTimeSeries(days: number) {
   const now = new Date();
+  // Ensure mock data never starts before STRC IPO date
+  const ipoDate = new Date(STRC_IPO_DATE + "T00:00:00");
+  const cutoffDate = new Date(now);
+  cutoffDate.setDate(cutoffDate.getDate() - days);
+  const startDate = cutoffDate > ipoDate ? cutoffDate : ipoDate;
+
   const prices: { date: string; strc: number; mstr: number; btc: number; strf: number; strk: number }[] = [];
   const rates: { date: string; strc_rate_pct: number; sofr_1m_pct: number }[] = [];
   const mnavHistory: { date: string; mnav: number; mnav_low: number; mnav_high: number }[] = [];
   const volHistory: { date: string; vol_30d_strc: number; vol_30d_mstr: number; vol_30d_btc: number }[] = [];
   const corrHistory: { date: string; corr_strc_mstr: number; corr_strc_btc: number }[] = [];
 
+  const totalDays = Math.ceil((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+
   let strcPrice = 99.5;
   let mstrPrice = 380;
   let btcPrice = 67000;
   let strfPrice = 88.0;
   let strkPrice = 95.0;
-  let strcRate = 10.5;
   let sofrRate = 4.35;
   let mnav = 1.18;
 
-  for (let i = days; i >= 0; i--) {
+  // Dividend schedule rate lookup for mock data (rate by "YYYY-MM" period)
+  function prevMockMonth(ym: string): string {
+    const [y, m] = ym.split("-").map(Number);
+    const pm = m === 1 ? 12 : m - 1;
+    const py = m === 1 ? y - 1 : y;
+    return `${py}-${String(pm).padStart(2, "0")}`;
+  }
+  const mockDivRateByMonth = new Map<string, number>([
+    ["2025-08", 9.00],
+    ["2025-09", 10.00],
+    ["2025-10", 10.25],
+    ["2025-11", 10.50],
+    ["2025-12", 10.75],
+    ["2026-01", 11.00],
+    ["2026-02", 11.25],
+    ["2026-03", 11.50],
+  ]);
+
+  for (let i = totalDays; i >= 0; i--) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().slice(0, 10);
+    if (dateStr < STRC_IPO_DATE) continue;
 
     // Random walk
     strcPrice = Math.max(95, Math.min(108, strcPrice + (Math.random() - 0.48) * 0.3));
@@ -33,10 +61,11 @@ function generateMockTimeSeries(days: number) {
     strkPrice = Math.max(88, Math.min(105, strkPrice + (Math.random() - 0.48) * 0.35));
     mnav = Math.max(0.9, Math.min(1.5, mnav + (Math.random() - 0.48) * 0.02));
 
-    // Rate steps up monthly
-    if (i % 30 === 0 && i < days - 10) {
-      strcRate = Math.min(12.0, strcRate + 0.25);
-    }
+    // STRC rate from dividend schedule (rate takes effect on record date = 15th)
+    const month = dateStr.slice(0, 7);
+    const day = parseInt(dateStr.slice(8, 10));
+    const effectiveMonth = day < 15 ? prevMockMonth(month) : month;
+    const strcRate = mockDivRateByMonth.get(effectiveMonth) ?? mockDivRateByMonth.get(prevMockMonth(effectiveMonth)) ?? 9.0;
 
     prices.push({
       date: dateStr,
@@ -82,7 +111,19 @@ function generateMockTimeSeries(days: number) {
     { term: "2Y", rate: 3.45 },
   ];
 
-  return { prices, rates, mnav: mnavHistory, vol: volHistory, corr: corrHistory, sofr_forward: sofrForward };
+  // Mock dividend schedule
+  const mockDividends = [
+    { period: "Mar 2026", periodSort: "2026-03", recordDate: "03/15/2026", payoutDate: "03/31/2026", ratePct: 11.50, dividendPerShare: 0.96, isCurrent: true, isProRated: false, announcedDate: "2026-02-14" },
+    { period: "Feb 2026", periodSort: "2026-02", recordDate: "02/15/2026", payoutDate: "02/27/2026", ratePct: 11.25, dividendPerShare: 0.94, isCurrent: false, isProRated: false, announcedDate: "2026-01-15" },
+    { period: "Jan 2026", periodSort: "2026-01", recordDate: "01/15/2026", payoutDate: "01/30/2026", ratePct: 11.00, dividendPerShare: 0.92, isCurrent: false, isProRated: false, announcedDate: "2025-12-13" },
+    { period: "Dec 2025", periodSort: "2025-12", recordDate: "12/15/2025", payoutDate: "12/31/2025", ratePct: 10.75, dividendPerShare: 0.90, isCurrent: false, isProRated: false, announcedDate: "2025-11-15" },
+    { period: "Nov 2025", periodSort: "2025-11", recordDate: "11/15/2025", payoutDate: "11/28/2025", ratePct: 10.50, dividendPerShare: 0.88, isCurrent: false, isProRated: false, announcedDate: "2025-10-15" },
+    { period: "Oct 2025", periodSort: "2025-10", recordDate: "10/15/2025", payoutDate: "10/31/2025", ratePct: 10.25, dividendPerShare: 0.85, isCurrent: false, isProRated: false, announcedDate: "2025-09-13" },
+    { period: "Sep 2025", periodSort: "2025-09", recordDate: "09/15/2025", payoutDate: "09/30/2025", ratePct: 10.00, dividendPerShare: 0.83, isCurrent: false, isProRated: false, announcedDate: "2025-08-14" },
+    { period: "Aug 2025", periodSort: "2025-08", recordDate: "08/15/2025", payoutDate: "08/29/2025", ratePct: 9.00, dividendPerShare: 0.80, isCurrent: false, isProRated: true, announcedDate: "2025-07-29" },
+  ];
+
+  return { prices, rates, mnav: mnavHistory, vol: volHistory, corr: corrHistory, sofr_forward: sofrForward, dividends: mockDividends };
 }
 
 export async function GET(request: NextRequest) {
@@ -98,7 +139,10 @@ export async function GET(request: NextRequest) {
 
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
-    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    // Never return STRC data before IPO
+    const ipoDate = new Date(STRC_IPO_DATE + "T00:00:00");
+    const effectiveCutoff = cutoff > ipoDate ? cutoff : ipoDate;
+    const cutoffStr = effectiveCutoff.toISOString().slice(0, 10);
 
     // Fetch price series
     const priceRows = await db
@@ -164,6 +208,44 @@ export async function GET(request: NextRequest) {
       r.sofr_1m_pct = sofrMap.get(r.date) ?? r.sofr_1m_pct;
     }
 
+    // Build dividend schedule from rate history
+    const allRateRows = await db
+      .select()
+      .from(strcRateHistory)
+      .orderBy(desc(strcRateHistory.effectiveDate));
+
+    const now = new Date();
+    const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+    const dividends = allRateRows.map((r) => {
+      const [yyyy, mm] = r.effectiveDate.split("-");
+      const year = parseInt(yyyy);
+      const month = parseInt(mm);
+      const ratePct = parseFloat(r.ratePct);
+      const monthNames = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+      // Last business day of month
+      const lastDay = new Date(year, month, 0);
+      const dow = lastDay.getDay();
+      if (dow === 0) lastDay.setDate(lastDay.getDate() - 2);
+      if (dow === 6) lastDay.setDate(lastDay.getDate() - 1);
+      const payoutMm = String(lastDay.getMonth() + 1).padStart(2, "0");
+      const payoutDd = String(lastDay.getDate()).padStart(2, "0");
+
+      const periodSort = `${yyyy}-${mm.padStart(2, "0")}`;
+      return {
+        period: `${monthNames[month]} ${yyyy}`,
+        periodSort,
+        recordDate: `${mm.padStart(2, "0")}/15/${yyyy}`,
+        payoutDate: `${payoutMm}/${payoutDd}/${lastDay.getFullYear()}`,
+        ratePct,
+        dividendPerShare: parseFloat(((ratePct / 12 / 100) * 100).toFixed(2)),
+        isCurrent: periodSort === currentPeriod,
+        isProRated: r.effectiveDate === "2025-08-01",
+        announcedDate: r.announcedDate,
+      };
+    });
+
     const mnavHistory = metricRows
       .filter((m) => m.mnav)
       .map((m) => ({
@@ -205,6 +287,7 @@ export async function GET(request: NextRequest) {
       vol: volHistory,
       corr: corrHistory,
       sofr_forward: sofrForward,
+      dividends,
     });
   } catch {
     return NextResponse.json(generateMockTimeSeries(days));
