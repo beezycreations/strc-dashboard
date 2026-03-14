@@ -5,7 +5,7 @@ import { useMstrMnav } from "@/src/lib/hooks/use-api";
 import {
   ComposedChart,
   Line,
-  Area,
+  Bar,
   XAxis,
   YAxis,
   Tooltip,
@@ -191,17 +191,17 @@ export default function MstrMnavChart() {
                 );
               }}
             />
+            {/* Cumulative BTC holdings bars (rendered first so line draws on top) */}
+            <Bar
+              yAxisId="btc"
+              dataKey="cum_btc"
+              fill={colors.btc}
+              opacity={0.18}
+              radius={[1, 1, 0, 0]}
+            />
             {/* 1.0× reference line */}
             <ReferenceLine yAxisId="mnav" y={1} stroke={colors.t3} strokeDasharray="6 3" label={{ value: "1.0× NAV", fill: colors.t3, fontSize: 9 }} />
-            {/* mNAV area + line */}
-            <Area
-              yAxisId="mnav"
-              type="monotone"
-              dataKey="mnav"
-              fill={colors.amber}
-              fillOpacity={0.08}
-              stroke="none"
-            />
+            {/* mNAV line */}
             <Line
               yAxisId="mnav"
               type="monotone"
@@ -210,17 +210,6 @@ export default function MstrMnavChart() {
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4, stroke: colors.amber, fill: "#fff" }}
-            />
-            {/* Cumulative BTC holdings line */}
-            <Line
-              yAxisId="btc"
-              type="stepAfter"
-              dataKey="cum_btc"
-              stroke={colors.btc}
-              strokeWidth={1.5}
-              strokeDasharray="4 4"
-              dot={false}
-              activeDot={{ r: 3, stroke: colors.btc, fill: "#fff" }}
             />
           </ComposedChart>
         </ResponsiveContainer>
