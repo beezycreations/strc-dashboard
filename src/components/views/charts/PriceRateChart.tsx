@@ -72,7 +72,7 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
       date: p.date,
       strc: p.strc,
       rate_pct: ratePct,
-      div_marker: isDivPayout ? 1 : 0,
+      div_marker: isDivPayout ? 14 : 0,
     };
   });
 
@@ -111,7 +111,7 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
             const v = Number(value);
             if (name === "strc") return [`$${v.toFixed(2)}`, "STRC Price"];
             if (name === "rate_pct") return [`${v.toFixed(2)}%`, "STRC Rate"];
-            if (name === "div_marker") return v > 0 ? ["Paid", "Dividend"] : [null, null];
+            if (name === "div_marker") return v > 0 ? ["Yes", "Dividend Paid"] : [null, null];
             return [`${v}`, String(name)];
           }}
         />
@@ -129,9 +129,9 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
         {/* Par reference line */}
         <ReferenceLine yAxisId="price" y={100} stroke={colors.t3} strokeDasharray="4 4" />
         {/* Dividend payment bars — full-height green columns on payout dates */}
-        <Bar yAxisId="rate" dataKey="div_marker" barSize={2} isAnimationActive={false} legendType="diamond">
+        <Bar yAxisId="rate" dataKey="div_marker" barSize={2} isAnimationActive={false} legendType="rect">
           {chartData.map((d, i) => (
-            <Cell key={i} fill={d.div_marker > 0 ? colors.green : "transparent"} fillOpacity={d.div_marker > 0 ? 0.5 : 0} />
+            <Cell key={i} fill={d.div_marker > 0 ? colors.green : "transparent"} fillOpacity={d.div_marker > 0 ? 0.4 : 0} />
           ))}
         </Bar>
         {/* STRC Price line */}
