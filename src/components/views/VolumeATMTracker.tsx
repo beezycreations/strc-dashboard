@@ -107,7 +107,7 @@ export default function VolumeATMTracker() {
     <div className="card">
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Volume & ATM Tracker</div>
+        <div style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Volume and ATM Tracker</div>
         <div style={{ display: "flex", gap: 4 }}>
           {(["1m", "3m", "all"] as const).map((r) => (
             <button
@@ -188,7 +188,6 @@ export default function VolumeATMTracker() {
                 if (v === 0) return null;
                 switch (String(name)) {
                   case "strc_volume": return [fmtK(v) + " shares", "STRC Volume"];
-                  case "mstr_volume": return [fmtK(v) + " shares", "MSTR Volume"];
                   case "atm_proceeds_confirmed": return [`$${v.toFixed(1)}M`, "ATM Issuance (8-K)"];
                   case "atm_proceeds_estimated": return [`$${v.toFixed(1)}M`, "ATM Issuance (Est.)"];
                   default: return [`${v}`, String(name)];
@@ -202,7 +201,6 @@ export default function VolumeATMTracker() {
               formatter={(value: string) => {
                 switch (value) {
                   case "strc_volume": return "STRC Volume";
-                  case "mstr_volume": return "MSTR Volume";
                   case "atm_proceeds_confirmed": return "ATM (8-K Confirmed)";
                   case "atm_proceeds_estimated": return "ATM (Estimated)";
                   default: return value;
@@ -218,17 +216,6 @@ export default function VolumeATMTracker() {
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4, stroke: colors.accent, fill: "#fff" }}
-            />
-            {/* MSTR volume line (lighter, dashed) */}
-            <Line
-              yAxisId="vol"
-              type="monotone"
-              dataKey="mstr_volume"
-              stroke={colors.t3}
-              strokeWidth={1.5}
-              strokeDasharray="4 4"
-              dot={false}
-              activeDot={{ r: 3, stroke: colors.t3, fill: "#fff" }}
             />
             {/* ATM issuance bars — confirmed (green) */}
             <Bar
