@@ -1,0 +1,35 @@
+name: Compute daily metrics
+
+on:
+  schedule:
+    # Run at market close (4:05 PM ET = 21:05 UTC) and once more at 6 PM ET for final recalc
+    - cron: '5 21 * * 1-5'
+    - cron: '0 23 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  daily-metrics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute mNAV, volatility, beta, correlation, and tranche metrics
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Missing SITE_URL or CRON_SECRET secrets — skipping"
+            exit 0
+          fi
+
+          RESULT=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$SITE_URL/api/cron/daily-metrics")
+
+          API_CODE=$(echo "$RESULT" | tail -1)
+          API_BODY=$(echo "$RESULT" | sed '$d')
+
+          echo "daily-metrics response ($API_CODE): $API_BODY"
+
+          if [ "$API_CODE" != "200" ]; then
+            echo "::warning::Daily metrics cron returned $API_CODE"
+          fi

@@ -1,0 +1,35 @@
+name: Fetch SOFR rate
+
+on:
+  schedule:
+    # SOFR publishes once daily around 8 AM ET (13:00 UTC) — check twice to catch delays
+    - cron: '0 13 * * 1-5'
+    - cron: '0 15 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  fetch-sofr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch latest SOFR from FRED
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Missing SITE_URL or CRON_SECRET secrets — skipping"
+            exit 0
+          fi
+
+          RESULT=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$SITE_URL/api/cron/sofr")
+
+          API_CODE=$(echo "$RESULT" | tail -1)
+          API_BODY=$(echo "$RESULT" | sed '$d')
+
+          echo "sofr response ($API_CODE): $API_BODY"
+
+          if [ "$API_CODE" != "200" ]; then
+            echo "::warning::SOFR cron returned $API_CODE"
+          fi
