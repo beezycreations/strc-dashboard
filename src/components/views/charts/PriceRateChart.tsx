@@ -3,6 +3,7 @@
 import {
   ComposedChart,
   Line,
+  Bar,
   XAxis,
   YAxis,
   Tooltip,
@@ -10,6 +11,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
   ReferenceLine,
+  Cell,
 } from "recharts";
 import { colors, rechartsDefaults, STRC_IPO_DATE } from "@/src/lib/chart-config";
 
@@ -17,7 +19,7 @@ interface PriceRateChartProps {
   data?: {
     prices?: Array<{ date: string; strc: number }>;
     rates?: Array<{ date: string; strc_rate_pct: number; sofr_1m_pct: number }>;
-    dividends?: Array<{ periodSort: string; ratePct: number }>;
+    dividends?: Array<{ periodSort: string; ratePct: number; payoutDate: string; dividendPerShare: number }>;
   };
 }
 
@@ -30,12 +32,22 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
   }
 
   // Build rate lookup from dividend schedule (DB-backed, authoritative)
-  // Each dividend has periodSort "YYYY-MM" and ratePct
-  // The new rate takes effect on the record date (15th of the month).
-  // Before the 15th, the prior month's rate is still in effect.
   const dividendRateByMonth = new Map<string, number>();
   for (const d of (data.dividends ?? [])) {
     dividendRateByMonth.set(d.periodSort, d.ratePct);
+  }
+
+  // Build payout date set for dividend markers
+  // payoutDate format is "MM/DD/YYYY" — convert to "YYYY-MM-DD"
+  const payoutDates = new Map<string, number>();
+  for (const d of (data.dividends ?? [])) {
+    if (d.payoutDate) {
+      const [mm, dd, yyyy] = d.payoutDate.split("/");
+      if (mm && dd && yyyy) {
+        const isoDate = `${yyyy}-${mm}-${dd}`;
+        payoutDates.set(isoDate, d.dividendPerShare ?? 0);
+      }
+    }
   }
 
   function prevMonth(ym: string): string {
@@ -45,46 +57,26 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
     return `${py}-${String(pm).padStart(2, "0")}`;
   }
 
-  // SOFR lookup from rates array (daily observations)
-  const sofrMap = new Map<string, number>();
-  for (const r of (data.rates ?? [])) {
-    if (r.sofr_1m_pct) sofrMap.set(r.date, r.sofr_1m_pct);
-  }
-
-  // Forward-fill SOFR so every day has a value
-  let lastSofr: number | null = null;
-
   const chartData = ipoFilteredPrices.map((p) => {
-    const month = p.date.slice(0, 7); // "YYYY-MM"
+    const month = p.date.slice(0, 7);
     const day = parseInt(p.date.slice(8, 10));
-
-    // Before the 15th (record date), the prior month's rate is in effect
     const effectiveMonth = day < 15 ? prevMonth(month) : month;
     const ratePct = dividendRateByMonth.get(effectiveMonth)
       ?? dividendRateByMonth.get(prevMonth(effectiveMonth))
       ?? null;
 
-    // Forward-fill SOFR
-    const sofrVal = sofrMap.get(p.date);
-    if (sofrVal != null) lastSofr = sofrVal;
+    // Check if this date is a dividend payout
+    const isDivPayout = payoutDates.has(p.date);
 
     return {
       date: p.date,
       strc: p.strc,
       rate_pct: ratePct,
-      sofr_pct: lastSofr,
+      div_marker: isDivPayout ? 1 : 0,
     };
   });
 
-  // Check for dividend dates (last day of month)
-  const isDividendDate = (dateStr: string) => {
-    const d = new Date(dateStr);
-    const nextDay = new Date(d);
-    nextDay.setDate(nextDay.getDate() + 1);
-    return nextDay.getMonth() !== d.getMonth();
-  };
-
-  // Show ~12 evenly spaced tick labels to avoid crowding
+  // Show ~12 evenly spaced tick labels
   const tickInterval = Math.max(1, Math.floor(chartData.length / 12));
 
   return (
@@ -119,7 +111,7 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
             const v = Number(value);
             if (name === "strc") return [`$${v.toFixed(2)}`, "STRC Price"];
             if (name === "rate_pct") return [`${v.toFixed(2)}%`, "STRC Rate"];
-            if (name === "sofr_pct") return [`${v.toFixed(2)}%`, "SOFR 1M"];
+            if (name === "div_marker") return v > 0 ? ["Paid", "Dividend"] : [null, null];
             return [`${v}`, String(name)];
           }}
         />
@@ -130,24 +122,22 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
           formatter={(value: string) => {
             if (value === "strc") return "STRC Price";
             if (value === "rate_pct") return "STRC Rate";
-            if (value === "sofr_pct") return "SOFR 1M";
+            if (value === "div_marker") return "Dividend Paid";
             return value;
           }}
         />
         {/* Par reference line */}
         <ReferenceLine yAxisId="price" y={100} stroke={colors.t3} strokeDasharray="4 4" />
-        {/* Dividend date markers */}
-        {chartData
-          .filter((d) => isDividendDate(d.date))
-          .map((d) => (
-            <ReferenceLine key={d.date} yAxisId="price" x={d.date} stroke={colors.green} strokeDasharray="3 3" strokeWidth={1} />
+        {/* Dividend payment bars — full-height green columns on payout dates */}
+        <Bar yAxisId="rate" dataKey="div_marker" barSize={2} isAnimationActive={false} legendType="diamond">
+          {chartData.map((d, i) => (
+            <Cell key={i} fill={d.div_marker > 0 ? colors.green : "transparent"} fillOpacity={d.div_marker > 0 ? 0.5 : 0} />
           ))}
+        </Bar>
         {/* STRC Price line */}
         <Line yAxisId="price" type="monotone" dataKey="strc" stroke={colors.accent} strokeWidth={2} dot={false} />
-        {/* STRC Rate line (was Bar) */}
+        {/* STRC Rate line */}
         <Line yAxisId="rate" type="stepAfter" dataKey="rate_pct" stroke={colors.violet} strokeWidth={2} dot={false} />
-        {/* SOFR line */}
-        <Line yAxisId="rate" type="stepAfter" dataKey="sofr_pct" stroke={colors.accent} strokeDasharray="4 4" strokeWidth={1.5} dot={false} />
       </ComposedChart>
     </ResponsiveContainer>
   );
