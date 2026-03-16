@@ -25,14 +25,20 @@ function generateMockData() {
   const rng = seededRng(42);
 
   // Step 1: Generate volume history (90 trading days)
+  // Exclude today — we only show volume for completed trading days.
+  // ATM estimates require finalized EOD volume; showing pre-market or
+  // intraday partial volume would produce misleading issuance estimates.
   const volumeHistory: { date: string; strc_volume: number; strc_price: number; mstr_volume: number }[] = [];
   const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
   let strcPrice = 99.5;
 
   for (let i = 90; i >= 0; i--) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
     if (d.getDay() === 0 || d.getDay() === 6) continue;
+    // Skip today — no finalized volume yet
+    if (d.toISOString().slice(0, 10) === todayStr) continue;
 
     strcPrice = Math.max(96, Math.min(105, strcPrice + (rng() - 0.48) * 0.4));
     const baseVol = 2_800_000 + rng() * 2_000_000;
@@ -144,10 +150,10 @@ const MOCK_RESPONSE = {
   cumulative_atm: mockData.cumulativeAtm,
   atm_events: mockData.atmEvents,
   kpi: {
-    strc_volume_today: 4_200_000,
+    strc_volume_today: 0, // No volume until market closes
     strc_volume_avg_5d: 3_800_000,
     strc_volume_avg_20d: 3_100_000,
-    strc_volume_ratio: 1.35,
+    strc_volume_ratio: 0,
     strc_atm_deployed_usd: 3_400_000_000,
     strc_atm_authorized_usd: 4_200_000_000,
     strc_atm_remaining_usd: 800_000_000,
@@ -268,8 +274,10 @@ export async function GET() {
     const mstrAtmDeployed = latestCap ? parseFloat(latestCap.mstrAtmDeployedUsd ?? "0") : 0;
     const mstrAtmAuthorized = latestCap ? parseFloat(latestCap.mstrAtmAuthorizedUsd ?? "0") : 0;
 
-    // Volume KPIs
-    const recentVols = volumeHistory.slice(-20).map((v) => v.strc_volume);
+    // Volume KPIs — only show "today" volume if market has closed (finalized EOD)
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const completedVolume = volumeHistory.filter((v) => v.date < todayStr);
+    const recentVols = completedVolume.slice(-20).map((v) => v.strc_volume);
     const volToday = recentVols[recentVols.length - 1] ?? 0;
     const volAvg5d = recentVols.slice(-5).reduce((a, b) => a + b, 0) / Math.max(1, Math.min(5, recentVols.length));
     const volAvg20d = recentVols.reduce((a, b) => a + b, 0) / Math.max(1, recentVols.length);

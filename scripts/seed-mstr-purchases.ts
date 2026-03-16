@@ -18,7 +18,7 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-// All 102 confirmed MSTR Bitcoin purchases from Strategy 8-K filings
+// All 103 confirmed MSTR Bitcoin purchases from Strategy 8-K filings
 // Format: [purchase_number, date, btc_acquired, avg_cost, cost_m, cumulative_btc, adso_thousands | null]
 const PURCHASES: Array<[number, string, number, number, number, number, number | null]> = [
   [1,   "2020-08-10", 21454,  11652,  250,    21454,   null],
@@ -123,6 +123,7 @@ const PURCHASES: Array<[number, string, number, number, number, number, number |
   [100, "2026-02-23", 592,    67286,  40,     717722,  366419],
   [101, "2026-03-02", 3015,   67700,  204,    720737,  368154],
   [102, "2026-03-09", 17994,  70946,  1277,   738731,  374506],
+  [103, "2026-03-16", 22337,  70290,  1570,   761068,  null],
 ];
 
 async function seed() {

@@ -45,6 +45,13 @@ const EV_TIMELINE: Array<{ date: string } & EvComponents> = [
   { date: "2025-05-01", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 2_500_000_000 + 700_000_000, cash: 800_000_000 },
   // Jul 2025: STRD launched, STRC at ~$3.4B
   { date: "2025-07-25", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 3_400_000_000 + 700_000_000 + 1_000_000_000, cash: 1_000_000_000 },
+  // Jan 2026: Continued ATM issuance across all preferred tranches
+  // STRF: ~$711M, STRC: ~$4.5B, STRK: ~$0, STRD: ~$0
+  { date: "2026-01-05", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 4_500_000_000, cash: 1_200_000_000 },
+  // Mar 2026: 8-K shows STRC $1.18B this period, MSTR $396M ATM
+  // Cumulative deployed: STRC notional from 8-K pattern, STRK/STRD not yet issued
+  // STRF: $711M, STRC: ~$5.7B deployed (notional basis), STRK: $0, STRD: $0
+  { date: "2026-03-16", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 5_700_000_000, cash: 1_500_000_000 },
 ];
 
 function getEvComponents(dateStr: string): EvComponents {

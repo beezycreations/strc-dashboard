@@ -87,7 +87,29 @@ function extractAtmProceeds(
   const results: NonNullable<ParsedEightK["atmProceeds"]> = [];
   const tickers = ["STRC", "STRF", "STRK", "STRD", "MSTR"] as const;
 
+  // Strategy 1: Table-based extraction.
+  // 8-K ATM tables have rows like: "STRC Stock ... 11,818,467 $ 1,181.8 $ ... 1,180.4 $"
+  // After HTML stripping, these become lines with ticker name followed by numbers.
+  // Look for patterns: ticker + shares_sold + notional + net_proceeds
   for (const ticker of tickers) {
+    // Match ticker row in stripped table: "STRC Stock" or "MSTR Stock" followed by numbers
+    const tablePattern = new RegExp(
+      `${ticker}\\s+Stock[^\\n]*?([\\d,]+)\\s*\\$?\\s*([\\d,.]+)\\s*\\$?\\s*([\\d,.]+)`,
+      "i"
+    );
+    const tableMatch = tablePattern.exec(text);
+    if (tableMatch) {
+      const shares = parseInt(tableMatch[1].replace(/,/g, ""));
+      // Second capture is notional (millions), third is net proceeds (millions)
+      const netProceedsM = parseFloat(tableMatch[3].replace(/,/g, ""));
+      if (shares > 0 && netProceedsM > 0) {
+        const proceeds = netProceedsM * 1_000_000;
+        results.push({ ticker, proceeds, shares, avgPrice: proceeds / shares });
+        continue; // Skip regex-based extraction for this ticker
+      }
+    }
+
+    // Strategy 2: Prose-based extraction (legacy patterns)
     const proceedsPatterns = [
       new RegExp(
         `${ticker}[^.]{0,200}(?:\\$([\\d.]+)\\s*(?:million|billion)|([\\d,]+)\\s*(?:million|billion)\\s*dollars)[^.]{0,100}(?:atm|at-the-market)`,
@@ -101,11 +123,21 @@ function extractAtmProceeds(
         `aggregate\\s+proceeds[^.]{0,100}${ticker}[^.]{0,100}\\$([\\d.]+)\\s*(?:million|billion)`,
         "i"
       ),
+      // "net proceeds of approximately $X million" near ticker
+      new RegExp(
+        `${ticker}[^.]{0,300}net\\s+proceeds[^.]{0,100}\\$([\\d.]+)\\s*(?:million|billion)`,
+        "i"
+      ),
+      new RegExp(
+        `net\\s+proceeds[^.]{0,100}\\$([\\d.]+)\\s*(?:million|billion)[^.]{0,200}${ticker}`,
+        "i"
+      ),
     ];
 
     const sharesPatterns = [
       new RegExp(`([\\d,]+)\\s+shares\\s+of[^.]{0,50}${ticker}`, "i"),
       new RegExp(`${ticker}[^.]{0,50}([\\d,]+)\\s+shares`, "i"),
+      new RegExp(`sold\\s+([\\d,]+)\\s+shares[^.]{0,100}${ticker}`, "i"),
     ];
 
     let proceeds: number | null = null;

@@ -28,6 +28,7 @@ const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
   { filed: "2026-02-17", type: "ATM", period_start: "2026-02-08", period_end: "2026-02-15", shares_sold: 785_354, net_proceeds: 78_400_000, btc_purchased: 1_158, avg_btc_price: 68_000 },
   { filed: "2026-03-02", type: "ATM", period_start: "2026-02-22", period_end: "2026-02-28", shares_sold: 71_590, net_proceeds: 7_100_000, btc_purchased: 105, avg_btc_price: 68_000 },
   { filed: "2026-03-09", type: "ATM", period_start: "2026-03-01", period_end: "2026-03-07", shares_sold: 3_776_205, net_proceeds: 377_100_000, btc_purchased: 5_315, avg_btc_price: 71_000 },
+  { filed: "2026-03-16", type: "ATM", period_start: "2026-03-09", period_end: "2026-03-15", shares_sold: 11_818_467, net_proceeds: 1_180_400_000, btc_purchased: 16_794, avg_btc_price: 70_290 },
 ];
 
 const ATM_EVENTS = CONFIRMED_STRC_ATM.filter((e) => e.type === "ATM");
