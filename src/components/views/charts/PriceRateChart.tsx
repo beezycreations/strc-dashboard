@@ -3,7 +3,6 @@
 import {
   ComposedChart,
   Line,
-  Bar,
   XAxis,
   YAxis,
   Tooltip,
@@ -11,7 +10,6 @@ import {
   ResponsiveContainer,
   CartesianGrid,
   ReferenceLine,
-  Cell,
 } from "recharts";
 import { colors, rechartsDefaults, STRC_IPO_DATE } from "@/src/lib/chart-config";
 
@@ -37,19 +35,6 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
     dividendRateByMonth.set(d.periodSort, d.ratePct);
   }
 
-  // Build payout date set for dividend markers
-  // payoutDate format is "MM/DD/YYYY" — convert to "YYYY-MM-DD"
-  const payoutDates = new Map<string, number>();
-  for (const d of (data.dividends ?? [])) {
-    if (d.payoutDate) {
-      const [mm, dd, yyyy] = d.payoutDate.split("/");
-      if (mm && dd && yyyy) {
-        const isoDate = `${yyyy}-${mm}-${dd}`;
-        payoutDates.set(isoDate, d.dividendPerShare ?? 0);
-      }
-    }
-  }
-
   function prevMonth(ym: string): string {
     const [y, m] = ym.split("-").map(Number);
     const pm = m === 1 ? 12 : m - 1;
@@ -65,14 +50,10 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
       ?? dividendRateByMonth.get(prevMonth(effectiveMonth))
       ?? null;
 
-    // Check if this date is a dividend payout
-    const isDivPayout = payoutDates.has(p.date);
-
     return {
       date: p.date,
       strc: p.strc,
       rate_pct: ratePct,
-      div_marker: isDivPayout ? 14 : 0,
     };
   });
 
@@ -111,7 +92,6 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
             const v = Number(value);
             if (name === "strc") return [`$${v.toFixed(2)}`, "STRC Price"];
             if (name === "rate_pct") return [`${v.toFixed(2)}%`, "STRC Rate"];
-            if (name === "div_marker") return v > 0 ? ["Yes", "Dividend Paid"] : [null, null];
             return [`${v}`, String(name)];
           }}
         />
@@ -122,18 +102,11 @@ export default function PriceRateChart({ data }: PriceRateChartProps) {
           formatter={(value: string) => {
             if (value === "strc") return "STRC Price";
             if (value === "rate_pct") return "STRC Rate";
-            if (value === "div_marker") return "Dividend Paid";
             return value;
           }}
         />
         {/* Par reference line */}
         <ReferenceLine yAxisId="price" y={100} stroke={colors.t3} strokeDasharray="4 4" />
-        {/* Dividend payment bars — full-height green columns on payout dates */}
-        <Bar yAxisId="rate" dataKey="div_marker" barSize={2} isAnimationActive={false} legendType="rect">
-          {chartData.map((d, i) => (
-            <Cell key={i} fill={d.div_marker > 0 ? colors.green : "transparent"} fillOpacity={d.div_marker > 0 ? 0.4 : 0} />
-          ))}
-        </Bar>
         {/* STRC Price line */}
         <Line yAxisId="price" type="monotone" dataKey="strc" stroke={colors.accent} strokeWidth={2} dot={false} />
         {/* STRC Rate line */}
