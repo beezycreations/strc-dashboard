@@ -214,6 +214,8 @@ export async function GET(request: NextRequest) {
 
     const prices = Array.from(pricesByDate.entries())
       .sort(([a], [b]) => a.localeCompare(b))
+      // Filter out non-trading days (weekends/holidays where equities have no data)
+      .filter(([, vals]) => vals.strc && vals.strc > 0)
       .map(([date, vals]) => ({
         date,
         strc: vals.strc ?? 0,
