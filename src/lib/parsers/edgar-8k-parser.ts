@@ -9,6 +9,8 @@ export interface ParsedEightK {
   accessionNo: string;
   filingDate: string;
   btcHoldings?: { count: number; avgCost?: number; totalCost?: number };
+  btcPurchased?: { count: number; avgPrice: number; totalCost: number };
+  periodDates?: { start: string; end: string };
   atmProceeds?: Array<{
     ticker: "STRC" | "STRF" | "STRK" | "STRD" | "MSTR";
     proceeds: number;
@@ -37,6 +39,8 @@ export async function parse8K(
   const result: ParsedEightK = { accessionNo, filingDate, notes: "" };
 
   result.btcHoldings = extractBtcHoldings(text);
+  result.btcPurchased = extractBtcPurchased(text);
+  result.periodDates = extractPeriodDates(text);
   result.atmProceeds = extractAtmProceeds(text);
   result.strcRate = extractStrcRate(text, filingDate);
   result.usdReserve = extractUsdReserve(text);
@@ -44,6 +48,86 @@ export async function parse8K(
 
   result.notes = buildNotesSummary(result);
   return result;
+}
+
+const MONTH_MAP: Record<string, number> = {
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+  july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+};
+
+function parseNaturalDate(monthStr: string, dayStr: string, yearStr: string): string | null {
+  const month = MONTH_MAP[monthStr.toLowerCase()];
+  if (month === undefined) return null;
+  const day = parseInt(dayStr);
+  const year = parseInt(yearStr);
+  if (isNaN(day) || isNaN(year)) return null;
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * Extract the coverage period dates from 8-K text.
+ * Looks for patterns like "from January 4, 2026 through January 10, 2026"
+ * or "between March 1, 2026 and March 7, 2026"
+ */
+function extractPeriodDates(text: string): ParsedEightK["periodDates"] {
+  const monthNames = "(?:January|February|March|April|May|June|July|August|September|October|November|December)";
+  const patterns = [
+    // "from January 4, 2026 through January 10, 2026"
+    new RegExp(
+      `(?:from|between|during)\\s+(${monthNames})\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+(?:through|to|and)\\s+(${monthNames})\\s+(\\d{1,2}),?\\s+(\\d{4})`,
+      "i"
+    ),
+    // "the period January 4 - January 10, 2026"
+    new RegExp(
+      `(?:period|week)\\s+(?:of\\s+)?(${monthNames})\\s+(\\d{1,2})\\s*[-–]\\s*(${monthNames})\\s+(\\d{1,2}),?\\s+(\\d{4})`,
+      "i"
+    ),
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      // First pattern has 6 groups, second has 5 (shared year)
+      if (match.length >= 7) {
+        const start = parseNaturalDate(match[1], match[2], match[3]);
+        const end = parseNaturalDate(match[4], match[5], match[6]);
+        if (start && end) return { start, end };
+      } else if (match.length >= 6) {
+        const start = parseNaturalDate(match[1], match[2], match[5]);
+        const end = parseNaturalDate(match[3], match[4], match[5]);
+        if (start && end) return { start, end };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Extract BTC purchased in this filing period (not total holdings).
+ * Looks for "acquired approximately X bitcoins for approximately $Y at an average price of approximately $Z"
+ */
+function extractBtcPurchased(text: string): ParsedEightK["btcPurchased"] {
+  const patterns = [
+    // "acquired approximately 16,794 bitcoins for approximately $1.18 billion ... average price of approximately $70,290"
+    /acquir(?:ed|ing)\s+(?:approximately\s+)?([\d,]+)\s+bitcoin[s]?\s+(?:for\s+)?(?:approximately\s+)?\$?([\d,.]+)\s*(billion|million)[^.]{0,200}average\s+(?:purchase\s+)?price\s+(?:of\s+)?(?:approximately\s+)?\$?([\d,]+)/i,
+    // "purchased approximately X bitcoin ... average price ... $Y"
+    /purchas(?:ed|ing)\s+(?:approximately\s+)?([\d,]+)\s+bitcoin[s]?\s+(?:for\s+)?(?:approximately\s+)?\$?([\d,.]+)\s*(billion|million)[^.]{0,200}average\s+(?:purchase\s+)?price\s+(?:of\s+)?(?:approximately\s+)?\$?([\d,]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      const count = parseInt(match[1].replace(/,/g, ""));
+      const costRaw = parseFloat(match[2].replace(/,/g, ""));
+      const costMultiplier = match[3].toLowerCase() === "billion" ? 1e9 : 1e6;
+      const totalCost = costRaw * costMultiplier;
+      const avgPrice = parseInt(match[4].replace(/,/g, ""));
+      if (count > 0 && count < 100_000 && avgPrice > 10_000 && avgPrice < 500_000) {
+        return { count, avgPrice, totalCost };
+      }
+    }
+  }
+  return undefined;
 }
 
 function extractBtcHoldings(
@@ -243,6 +327,10 @@ function buildNotesSummary(result: ParsedEightK): string {
   const parts: string[] = [];
   if (result.btcHoldings)
     parts.push(`BTC: ${result.btcHoldings.count.toLocaleString()}`);
+  if (result.btcPurchased)
+    parts.push(`Bought: ${result.btcPurchased.count.toLocaleString()} BTC @ $${result.btcPurchased.avgPrice.toLocaleString()}`);
+  if (result.periodDates)
+    parts.push(`Period: ${result.periodDates.start} to ${result.periodDates.end}`);
   if (result.atmProceeds)
     parts.push(
       `ATM: ${result.atmProceeds.map((a) => `${a.ticker} $${(a.proceeds / 1e6).toFixed(0)}M`).join(", ")}`

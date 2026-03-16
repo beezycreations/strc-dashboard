@@ -2,6 +2,21 @@ import { NextResponse } from "next/server";
 import { desc } from "drizzle-orm";
 import { isMarketOpen, daysToMonthEnd } from "@/src/lib/utils/market-hours";
 import { LATEST_CONFIRMED_BTC, LATEST_CONFIRMED_DATE } from "@/src/lib/data/confirmed-purchases";
+import { forecastBtcHoldings as forecastFromEngine } from "@/src/lib/calculators/issuance-engine";
+import {
+  CONVERT_DEBT_USD,
+  CURRENT_PREF_NOTIONAL,
+  CASH_BALANCE,
+  ANNUAL_OBLIGATIONS,
+  MSTR_SHARES_AT_FILING,
+  MSTR_ATM_DEPLOYED_AT_FILING,
+  ATM_AUTHORIZED,
+  ATM_REMAINING,
+  ATM_DEPLOYED,
+  STRC_TOTAL_NOTIONAL,
+  computeMnav as computeMnavShared,
+  mnavRegimeFromValue,
+} from "@/src/lib/data/capital-structure";
 
 export const revalidate = 0;
 
@@ -18,6 +33,7 @@ interface LivePrices {
   mstr_price: number | null;
   mstr_change_pct: number | null;
   mstr_shares_outstanding: number | null;
+  mstr_volume: number | null;
   quote_timestamp: number | null;
 }
 
@@ -33,6 +49,7 @@ async function fetchLivePrices(): Promise<LivePrices> {
     mstr_price: null,
     mstr_change_pct: null,
     mstr_shares_outstanding: null,
+    mstr_volume: null,
     quote_timestamp: null,
   };
 
@@ -71,11 +88,12 @@ async function fetchLivePrices(): Promise<LivePrices> {
           }).catch(() => {}),
         fetch(`${fmpBase}/quote?symbol=MSTR&apikey=${fmpKey}`, { next: { revalidate: 30 } })
           .then((r) => r.json())
-          .then((data: Array<{ symbol: string; price: number; change?: number; changePercentage?: number }>) => {
+          .then((data: Array<{ symbol: string; price: number; volume?: number; change?: number; changePercentage?: number }>) => {
             const q = Array.isArray(data) ? data[0] : null;
             if (q) {
               result.mstr_price = q.price;
               result.mstr_change_pct = q.changePercentage ?? null;
+              result.mstr_volume = q.volume ?? null;
             }
           }).catch(() => {}),
         fetch(`${fmpBase}/profile?symbol=MSTR&apikey=${fmpKey}`, { next: { revalidate: 300 } })
@@ -97,35 +115,12 @@ async function fetchLivePrices(): Promise<LivePrices> {
   return result;
 }
 
-// ── Capital structure constants (update from 10-Q/8-K filings) ───────
-// These are the last confirmed values; estimated ATM issuance adjusts dynamically.
-
-// Last confirmed share count and the MSTR ATM deployed at that filing date.
-// When a new 10-Q/8-K drops, update both together so the delta stays accurate.
-const MSTR_SHARES_AT_FILING = 332_000_000;     // Basic shares outstanding (~Feb 2026 10-K)
-const MSTR_ATM_DEPLOYED_AT_FILING = 16_000_000_000; // MSTR ATM $ deployed as of that filing
-
-// Aggregate principal of convertible notes
-const CONVERT_DEBT_USD = 8_200_000_000;
-
-// Perpetual preferred notional (par × shares issued)
-const PREF_NOTIONAL: Record<string, number> = {
-  STRF: 711_000_000,
-  STRC: 3_400_000_000,
-  STRK: 700_000_000,
-  STRD: 1_000_000_000,
-};
-const TOTAL_PREF_NOTIONAL = Object.values(PREF_NOTIONAL).reduce((a, b) => a + b, 0);
-
-// Last reported cash balance
-const CASH_BALANCE = 1_000_000_000;
+// ── Capital structure imported from shared module ────────────────────
+// All constants now in src/lib/data/capital-structure.ts
 
 /**
  * Estimate adjusted MSTR shares outstanding:
  *   FMP shares (or filing shares) + estimated new shares from ATM since filing
- *
- * New shares = (current MSTR ATM deployed − deployed at filing) / current MSTR price
- * This gets corrected each time a new 8-K/10-Q updates the confirmed share count.
  */
 function estimateAdjustedShares(
   baseShares: number,
@@ -138,64 +133,20 @@ function estimateAdjustedShares(
   return baseShares + estimatedNewShares;
 }
 
-/**
- * mNAV per Strategy's methodology:
- *   mNAV = Enterprise Value / BTC Reserve
- *
- * Where:
- *   EV = (A) MSTR Market Cap
- *      + (B) Aggregate principal of indebtedness (convertible notes)
- *      + (C) Aggregate notional of perpetual preferred stock
- *      - (D) Most recently reported cash balance
- *
- *   BTC Reserve = BTC Holdings × BTC Price
- */
+/** Wrapper that adapts the shared computeMnav to the snapshot's calling convention */
 function computeMnav(params: {
   mstrShares: number;
   mstrPrice: number;
   btcHoldings: number;
   btcPrice: number;
-  totalDebt?: number;
-  totalPrefNotional?: number;
-  cashBalance?: number;
-  strcAtmDeployed?: number;  // for dynamic preferred notional adjustment
+  strcAtmDeployed?: number;
 }): number {
-  const {
-    mstrShares,
-    mstrPrice,
+  const { mstrShares, mstrPrice, btcHoldings, btcPrice } = params;
+  return computeMnavShared({
+    mstrMarketCap: mstrShares * mstrPrice,
     btcHoldings,
     btcPrice,
-    totalDebt = CONVERT_DEBT_USD,
-    totalPrefNotional = TOTAL_PREF_NOTIONAL,
-    cashBalance = CASH_BALANCE,
-    strcAtmDeployed,
-  } = params;
-
-  // (A) MSTR common stock market cap
-  const marketCap = mstrShares * mstrPrice;
-
-  // (C) Adjust preferred notional if we have a live STRC ATM deployed figure
-  // The base PREF_NOTIONAL.STRC is the last confirmed; if strcAtmDeployed is higher, use it
-  let adjustedPrefNotional = totalPrefNotional;
-  if (strcAtmDeployed !== undefined && strcAtmDeployed > PREF_NOTIONAL.STRC) {
-    adjustedPrefNotional = totalPrefNotional - PREF_NOTIONAL.STRC + strcAtmDeployed;
-  }
-
-  // EV = Market Cap + Debt + Preferred - Cash
-  const ev = marketCap + totalDebt + adjustedPrefNotional - cashBalance;
-
-  // BTC Reserve
-  const btcReserve = btcHoldings * btcPrice;
-
-  if (btcReserve <= 0) return 0;
-  return parseFloat((ev / btcReserve).toFixed(2));
-}
-
-function mnavRegimeFromValue(mnav: number): string {
-  // mNAV > 1 = premium (EV exceeds BTC reserve); < 1 = discount
-  if (mnav > 2.0) return "premium";
-  if (mnav > 1.2) return "tactical";
-  return "discount";
+  });
 }
 
 const MOCK_SNAPSHOT = {
@@ -219,17 +170,17 @@ const MOCK_SNAPSHOT = {
   btc_impairment_price: 16700,
   usd_reserve: 2_250_000_000,
   usd_coverage_months: 30.2,
-  total_annual_obligations: 689_000_000,
-  strc_atm_deployed: 3_842_800_000,
-  strc_atm_authorized: 4_200_000_000,
-  mstr_atm_deployed_est: 18_000_000_000,
-  mstr_atm_authorized: 21_000_000_000,
+  total_annual_obligations: ANNUAL_OBLIGATIONS,
+  strc_atm_deployed: ATM_DEPLOYED.STRC,
+  strc_atm_authorized: ATM_AUTHORIZED.STRC,
+  mstr_atm_deployed_est: ATM_DEPLOYED.MSTR,
+  mstr_atm_authorized: ATM_AUTHORIZED.MSTR,
   sofr_1m_pct: 4.3,
   days_to_announcement: 18,
   min_rate_next_month: 11.0,
   lp_current: 100.45,
   lp_formula_active: true,
-  atm_last_confirmed_date: "2026-02-28",
+  atm_last_confirmed_date: "2026-03-15", // latest 8-K period end
   dividend_stopper_active: false,
   btc_yield_ytd: 0.42,
   btc_dollar_gain_ytd: 8_900_000_000,
@@ -240,12 +191,12 @@ const MOCK_SNAPSHOT = {
   strc_volume_today: 4200000,
   strc_volume_avg_20d: 3100000,
   strc_volume_ratio: 1.35,
-  atm_deployed_total: 3_400_000_000,
-  atm_remaining: 800_000_000,
+  atm_deployed_total: ATM_DEPLOYED.STRC,
+  atm_remaining: ATM_REMAINING.STRC,
   atm_pace_90d_monthly: 380_000_000,
-  // New overview cards — null until computed by daily-metrics cron
-  strc_notional: 3_842_800_000 as number | null,
-  strc_market_cap: (3_842_800_000 / 100) * 100.45 as number | null,
+  // Overview cards — notional = all STRC shares outstanding × $100 par
+  strc_notional: STRC_TOTAL_NOTIONAL as number | null,
+  strc_market_cap: (STRC_TOTAL_NOTIONAL / 100) * 100.45 as number | null,
   strc_1m_vwap: null as number | null,
   strc_trading_volume_usd: null as number | null,
   mstr_price: null as number | null,
@@ -374,9 +325,16 @@ export async function GET() {
         mock.lp_current = live.strc_price;
         mock.lp_formula_active = live.strc_price >= 100;
       }
-      // Recompute mNAV = EV / BTC Reserve (Strategy methodology)
+      // ── 8-K-derived forecast: estimate BTC holdings + mNAV ──
       if (live.btc_price !== null && live.mstr_price !== null && live.mstr_price > 0) {
         const baseShares = live.mstr_shares_outstanding ?? MSTR_SHARES_AT_FILING;
+
+        // Use issuance engine (8-K pace-based, no volume/participation rate needed)
+        const forecast = forecastFromEngine(live.btc_price);
+        mock.btc_holdings = forecast.total_estimated_btc;
+        mock.btc_holdings_confirmed = LATEST_CONFIRMED_BTC;
+        mock.btc_nav = mock.btc_holdings * live.btc_price;
+        mock.strc_atm_deployed = forecast.estimated_strc_atm_deployed;
         const adjShares = estimateAdjustedShares(baseShares, mock.mstr_atm_deployed_est, live.mstr_price);
         mock.mnav = computeMnav({
           mstrShares: adjShares,
@@ -386,8 +344,7 @@ export async function GET() {
           strcAtmDeployed: mock.strc_atm_deployed,
         });
         mock.mnav_regime = mnavRegimeFromValue(mock.mnav);
-        // Breakeven BTC = EV / btcHoldings (price at which mNAV = 1.0)
-        const ev = (adjShares * live.mstr_price) + CONVERT_DEBT_USD + TOTAL_PREF_NOTIONAL - CASH_BALANCE;
+        const ev = (adjShares * live.mstr_price) + CONVERT_DEBT_USD + forecast.estimated_pref_notional - CASH_BALANCE;
         mock.mnav_breakeven_btc = Math.round(ev / mock.btc_holdings);
       }
       // Overlay live STRC market data
@@ -395,6 +352,7 @@ export async function GET() {
       if (live.strc_shares_outstanding !== null && live.strc_shares_outstanding > 0) {
         mock.strc_notional = live.strc_shares_outstanding * 100; // par = $100
       }
+      // Market cap = shares × price (shares = notional / $100 par)
       const strcPriceMock = live.strc_price ?? mock.strc_price;
       if (mock.strc_notional != null && mock.strc_notional > 0 && strcPriceMock > 0) {
         mock.strc_market_cap = (mock.strc_notional / 100) * strcPriceMock;
@@ -495,9 +453,19 @@ export async function GET() {
     const finalStrcParSpreadBps = parseFloat(((finalStrcPrice - 100) * 100).toFixed(0));
     const finalEffYield = parseFloat(((ratePct / finalStrcPrice) * 100).toFixed(2));
 
-    // Recompute mNAV = EV / BTC Reserve (Strategy methodology)
-    // Shares = FMP filing shares + estimated ATM issuance since filing
+    // ── 8-K-derived forecast: estimate BTC holdings + capital structure ──
     const baseShares = live.mstr_shares_outstanding ?? MSTR_SHARES_AT_FILING;
+    let estBtcHoldings = btcCount;
+    let estStrcAtmDeployed = strcAtmDeployed;
+    let estPrefNotional = CURRENT_PREF_NOTIONAL;
+
+    if (live.btc_price !== null) {
+      const forecast = forecastFromEngine(live.btc_price);
+      estBtcHoldings = forecast.total_estimated_btc;
+      estStrcAtmDeployed = forecast.estimated_strc_atm_deployed;
+      estPrefNotional = forecast.estimated_pref_notional;
+    }
+
     const adjShares = (live.mstr_price !== null && live.mstr_price > 0)
       ? estimateAdjustedShares(baseShares, mstrAtmDeployed, live.mstr_price)
       : baseShares;
@@ -505,9 +473,9 @@ export async function GET() {
       ? computeMnav({
           mstrShares: adjShares,
           mstrPrice: live.mstr_price,
-          btcHoldings: btcCount,
+          btcHoldings: estBtcHoldings,
           btcPrice: live.btc_price,
-          strcAtmDeployed: strcAtmDeployed,
+          strcAtmDeployed: estStrcAtmDeployed,
         })
       : mnav;
 
@@ -524,16 +492,18 @@ export async function GET() {
       mnav_confidence_high: mnavHigh,
       btc_price: finalBtcPrice,
       btc_24h_pct: finalBtc24h,
-      btc_holdings: btcCount,
-      btc_nav: finalBtcNav,
-      btc_coverage_ratio: finalBtcNav > 0
-        ? parseFloat((finalBtcNav / (strcAtmDeployed + totalAnnualObligations * 3)).toFixed(2))
+      btc_holdings: Math.round(estBtcHoldings),
+      btc_holdings_confirmed: btcCount,
+      btc_holdings_confirmed_date: LATEST_CONFIRMED_DATE,
+      btc_nav: Math.round(estBtcHoldings) * finalBtcPrice,
+      btc_coverage_ratio: finalBtcPrice > 0
+        ? parseFloat(((Math.round(estBtcHoldings) * finalBtcPrice) / (estStrcAtmDeployed + totalAnnualObligations * 3)).toFixed(2))
         : btcCoverageRatio,
       btc_impairment_price: btcImpairmentPrice,
       usd_reserve: usdReserve,
       usd_coverage_months: usdCoverageMonths,
       total_annual_obligations: totalAnnualObligations,
-      strc_atm_deployed: strcAtmDeployed,
+      strc_atm_deployed: estStrcAtmDeployed,
       strc_atm_authorized: strcAtmAuthorized,
       mstr_atm_deployed_est: mstrAtmDeployed,
       mstr_atm_authorized: mstrAtmAuthorized,
@@ -548,7 +518,7 @@ export async function GET() {
       btc_dollar_gain_ytd: MOCK_SNAPSHOT.btc_dollar_gain_ytd,
       btc_conversion_rate: MOCK_SNAPSHOT.btc_conversion_rate,
       mnav_breakeven_btc: (live.mstr_price !== null && live.mstr_price > 0)
-        ? Math.round(((adjShares * live.mstr_price) + CONVERT_DEBT_USD + TOTAL_PREF_NOTIONAL - CASH_BALANCE) / btcCount)
+        ? Math.round(((adjShares * live.mstr_price) + CONVERT_DEBT_USD + estPrefNotional - CASH_BALANCE) / estBtcHoldings)
         : MOCK_SNAPSHOT.mnav_breakeven_btc,
       is_market_open: isMarketOpen(),
       last_updated: new Date().toISOString(),
@@ -559,16 +529,16 @@ export async function GET() {
       atm_remaining: atmRemaining,
       atm_pace_90d_monthly: atmPace90dMonthly,
       // Overview cards
-      // Notional = total face value = shares × $100 par = ATM deployed USD
+      // Notional = all shares outstanding × $100 par (includes IPO + ATM)
       // FMP marketCap for STRC is wrong (returns MSTR's), so compute from notional
       strc_notional: latestMetrics?.strcNotionalUsd ? parseFloat(latestMetrics.strcNotionalUsd)
         : (live.strc_shares_outstanding ? live.strc_shares_outstanding * 100
-        : (strcAtmDeployed > 0 ? strcAtmDeployed : null)),
+        : STRC_TOTAL_NOTIONAL),
       strc_market_cap: (() => {
         // Market cap = shares × current price; shares = notional / $100 par
         const notional = latestMetrics?.strcNotionalUsd ? parseFloat(latestMetrics.strcNotionalUsd)
           : (live.strc_shares_outstanding ? live.strc_shares_outstanding * 100
-          : (strcAtmDeployed > 0 ? strcAtmDeployed : null));
+          : STRC_TOTAL_NOTIONAL);
         if (notional != null && finalStrcPrice > 0) return (notional / 100) * finalStrcPrice;
         return null;
       })(),
@@ -595,6 +565,7 @@ export async function GET() {
       mstr_price: null,
       mstr_change_pct: null,
       mstr_shares_outstanding: null,
+      mstr_volume: null,
       quote_timestamp: null,
     }));
 
@@ -613,9 +584,13 @@ export async function GET() {
         (mock.btc_nav / (mock.strc_atm_deployed + mock.total_annual_obligations * 3)).toFixed(2)
       );
     }
-    // mNAV = EV / BTC Reserve (Strategy methodology)
+    // ── 8-K-derived forecast for error fallback path ──
     if (live.btc_price !== null && live.mstr_price !== null && live.mstr_price > 0) {
       const baseShares = live.mstr_shares_outstanding ?? MSTR_SHARES_AT_FILING;
+      const forecast = forecastFromEngine(live.btc_price);
+      mock.btc_holdings = forecast.total_estimated_btc;
+      mock.btc_nav = mock.btc_holdings * live.btc_price;
+      mock.strc_atm_deployed = forecast.estimated_strc_atm_deployed;
       const adjShares = estimateAdjustedShares(baseShares, mock.mstr_atm_deployed_est, live.mstr_price);
       mock.mnav = computeMnav({
         mstrShares: adjShares,
@@ -625,9 +600,8 @@ export async function GET() {
         strcAtmDeployed: mock.strc_atm_deployed,
       });
       mock.mnav_regime = mnavRegimeFromValue(mock.mnav);
-      mock.mnav_breakeven_btc = Math.round(
-        ((adjShares * live.mstr_price) + CONVERT_DEBT_USD + TOTAL_PREF_NOTIONAL - CASH_BALANCE) / mock.btc_holdings
-      );
+      const ev = (adjShares * live.mstr_price) + CONVERT_DEBT_USD + forecast.estimated_pref_notional - CASH_BALANCE;
+      mock.mnav_breakeven_btc = Math.round(ev / mock.btc_holdings);
     }
     if (live.strc_price !== null) {
       mock.strc_price = live.strc_price;
@@ -645,10 +619,8 @@ export async function GET() {
     }
     // Market cap = (notional / $100 par) × current price
     const strcPrice = live.strc_price ?? mock.strc_price;
-    const notionalVal = mock.strc_notional ?? mock.strc_atm_deployed;
-    if (notionalVal > 0 && strcPrice > 0) {
-      mock.strc_market_cap = (notionalVal / 100) * strcPrice;
-      if (mock.strc_notional == null) mock.strc_notional = notionalVal;
+    if (mock.strc_notional != null && mock.strc_notional > 0 && strcPrice > 0) {
+      mock.strc_market_cap = (mock.strc_notional / 100) * strcPrice;
     }
     if (live.strc_price_avg_50 !== null) {
       mock.strc_1m_vwap = live.strc_price_avg_50;

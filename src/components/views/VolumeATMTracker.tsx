@@ -3,9 +3,12 @@
 import { useState, useMemo } from "react";
 import { useVolumeAtm, useSnapshot } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
-import BacktestResults from "@/src/components/ui/BacktestResults";
-import { buildAtmIssuanceBacktest, optimizeBacktestParams, type OptimizedParams } from "@/src/lib/calculators/backtest";
-import { CONFIRMED_STRC_ATM_EVENTS } from "@/src/lib/data/confirmed-strc-atm";
+import {
+  getDailyEstimates,
+  getWeightedDailyPace,
+  getEngineSummary,
+  backtestPaceModel,
+} from "@/src/lib/calculators/issuance-engine";
 import {
   ComposedChart,
   Line,
@@ -34,19 +37,6 @@ interface AtmEvent {
   is_estimated: boolean;
 }
 
-// Default participation rate — used as fallback when optimizer hasn't run.
-// Optimization showed 3.0% yields the highest confidence against confirmed 8-K data.
-const DEFAULT_PARTICIPATION_RATE = 0.030;
-const HIGH_CONFIDENCE_THRESHOLD = 1.5;
-const HIGH_CONFIDENCE_MULTIPLIER = 1.5;
-
-// Grid search dimensions (for methodology display)
-const ATM_EVENT_COUNT = CONFIRMED_STRC_ATM_EVENTS.length;
-const RATE_GRID_SIZE = 10;
-const THRESHOLD_GRID_SIZE = 4;
-const MULTIPLIER_GRID_SIZE = 5;
-const CONVERSION_GRID_SIZE = 4;
-
 export default function VolumeATMTracker() {
   const { data, isLoading } = useVolumeAtm();
   const { data: snap } = useSnapshot();
@@ -54,69 +44,12 @@ export default function VolumeATMTracker() {
   const [showMethodology, setShowMethodology] = useState(false);
 
   const kpi = data?.kpi ?? {};
-  const baseParticipationRate = kpi.participation_rate_current ?? DEFAULT_PARTICIPATION_RATE;
   const btcPrice = snap?.btc_price ?? 70000;
 
-  // AUTO-OPTIMIZING BACKTEST: Grid-searches participation rate, high-volume
-  // threshold/multiplier, and conversion rate to find the parameter set that
-  // maximizes confidence against confirmed 8-K data. Automatically recalibrates
-  // whenever new 8-K data is added to confirmed-strc-atm.ts.
-  const { atmBacktest, participationRate, optimizedParams } = useMemo(() => {
-    const allVolume = (data?.volume_history ?? []) as VolumeDay[];
-
-    // Primary: auto-optimize against real confirmed 8-K data
-    const optimized = optimizeBacktestParams(allVolume);
-
-    if (optimized.params.atm_confidence > 0) {
-      return {
-        atmBacktest: optimized.atmSummary,
-        participationRate: optimized.params.participation_rate,
-        optimizedParams: optimized.params,
-      };
-    }
-
-    // Fallback: use mock ATM events from API for dev/demo mode
-    const events = (data?.atm_events ?? []) as AtmEvent[];
-    const confirmed = events
-      .filter((e) => !e.is_estimated)
-      .sort((a, b) => a.date.localeCompare(b.date));
-
-    let backtest = buildAtmIssuanceBacktest([]);
-    if (confirmed.length >= 3) {
-      const backtestPairs = confirmed.map((evt, idx) => {
-        const periodStart = idx > 0
-          ? confirmed[idx - 1].date
-          : allVolume.length > 0 ? allVolume[0].date : evt.date;
-        const periodVolume = allVolume.filter(
-          (v) => v.date > periodStart && v.date <= evt.date
-        );
-        let totalEstProceeds = 0;
-        for (const vol of periodVolume) {
-          const fullIdx = allVolume.indexOf(vol);
-          const lookback = allVolume.slice(Math.max(0, fullIdx - 19), fullIdx + 1);
-          const avg20d = lookback.length > 0
-            ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
-            : vol.strc_volume;
-          const isHigh = vol.strc_volume > avg20d * HIGH_CONFIDENCE_THRESHOLD;
-          const rate = isHigh ? baseParticipationRate * HIGH_CONFIDENCE_MULTIPLIER : baseParticipationRate;
-          totalEstProceeds += vol.strc_volume * rate * vol.strc_price;
-        }
-        return { date: evt.date, actual_proceeds: evt.proceeds_usd, estimated_proceeds: totalEstProceeds };
-      });
-      backtest = buildAtmIssuanceBacktest(backtestPairs);
-    }
-
-    let correctedRate = baseParticipationRate;
-    if (backtest.calibrated_rate && backtest.calibrated_rate > 0) {
-      correctedRate = baseParticipationRate / backtest.calibrated_rate;
-    }
-
-    return {
-      atmBacktest: backtest,
-      participationRate: correctedRate,
-      optimizedParams: null as OptimizedParams | null,
-    };
-  }, [data?.atm_events, data?.volume_history, baseParticipationRate]);
+  // 8-K-derived engine data (static, from confirmed filings — no mock dependency)
+  const engineSummary = useMemo(() => getEngineSummary(), []);
+  const pace = useMemo(() => getWeightedDailyPace(), []);
+  const paceBacktest = useMemo(() => backtestPaceModel(), []);
 
   // Filter volume history by range
   const filteredVolume: VolumeDay[] = useMemo(() => {
@@ -132,134 +65,36 @@ export default function VolumeATMTracker() {
     return (data.volume_history as VolumeDay[]).filter((v) => v.date >= cutoffStr);
   }, [data?.volume_history, range]);
 
-  // Build ATM event lookup by date and identify confirmed date ranges
-  const { atmEventMap, confirmedRanges } = useMemo(() => {
-    const map = new Map<string, AtmEvent>();
-    const events = (data?.atm_events ?? []) as AtmEvent[];
-    for (const evt of events) {
-      map.set(evt.date, evt);
-    }
-
-    // Build confirmed 8-K date ranges.
-    // Each confirmed event is assumed to cover the period from the previous
-    // confirmed event's date (exclusive) to its own date (inclusive).
-    // Within that range, prior estimates/inferred values get replaced and
-    // the confirmed total is allocated proportionally by daily volume.
-    const confirmed = events
-      .filter((e) => !e.is_estimated)
-      .sort((a, b) => a.date.localeCompare(b.date));
-
-    const ranges: Array<{ start: string; end: string; proceeds_usd: number; shares_issued: number }> = [];
-    for (let i = 0; i < confirmed.length; i++) {
-      const prev = i > 0 ? confirmed[i - 1].date : null;
-      ranges.push({
-        start: prev ?? confirmed[i].date, // first confirmed event covers just its own day
-        end: confirmed[i].date,
-        proceeds_usd: confirmed[i].proceeds_usd,
-        shares_issued: confirmed[i].shares_issued,
-      });
-    }
-
-    return { atmEventMap: map, confirmedRanges: ranges };
-  }, [data?.atm_events]);
-
-  // Compute chart data with 8-K reconciliation
+  // Merge volume data (from API) with issuance estimates (from 8-K engine)
+  // Volume lines come from the API; ATM bars come from the issuance engine.
+  // This eliminates the dependency on mock-data-poisoned participation rates.
   const chartData = useMemo(() => {
-    const allVolume = (data?.volume_history ?? []) as VolumeDay[];
+    if (filteredVolume.length === 0) return [];
 
-    // Step 1: Build raw daily estimates for every day
-    const rawDays = filteredVolume.map((v) => {
-      const fullIdx = allVolume.findIndex((x) => x.date === v.date);
-      const lookback = allVolume.slice(Math.max(0, fullIdx - 19), fullIdx + 1);
-      const avg20d = lookback.length > 0
-        ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
-        : v.strc_volume;
+    const startDate = filteredVolume[0].date;
+    const endDate = filteredVolume[filteredVolume.length - 1].date;
 
-      // Check for a pre-existing estimated event from the API
-      const atmEvent = atmEventMap.get(v.date);
+    // Get daily issuance estimates from the unified 8-K engine
+    const estimates = getDailyEstimates(startDate, endDate, btcPrice);
+    const estimateMap = new Map(estimates.map((e) => [e.date, e]));
 
-      // Default: estimate from volume × participation rate
-      const isHighConfidence = v.strc_volume > avg20d * HIGH_CONFIDENCE_THRESHOLD;
-      const effectiveRate = isHighConfidence
-        ? participationRate * HIGH_CONFIDENCE_MULTIPLIER
-        : participationRate;
-      const inferredProceeds = v.strc_volume * effectiveRate * v.strc_price;
+    return filteredVolume.map((v) => {
+      const est = estimateMap.get(v.date);
+      const totalProceeds = est?.total_proceeds ?? 0;
+      const isConfirmed = est?.source === "confirmed";
 
       return {
         date: v.date,
         strc_volume: v.strc_volume,
         mstr_volume: v.mstr_volume,
         strc_price: v.strc_price,
-        avg_20d: Math.round(avg20d),
-        // These will be overwritten by reconciliation if within a confirmed range
-        atm_proceeds: atmEvent ? atmEvent.proceeds_usd : inferredProceeds,
-        atm_source: atmEvent
-          ? (atmEvent.is_estimated ? "estimated" as const : "confirmed" as const)
-          : "inferred" as const,
+        atm_proceeds_confirmed: isConfirmed ? totalProceeds / 1e6 : 0,
+        atm_proceeds_estimated: !isConfirmed && totalProceeds > 0 ? totalProceeds / 1e6 : 0,
+        atm_btc: est?.btc_estimate ?? 0,
+        atm_source: est?.source ?? null,
       };
     });
-
-    // Step 2: Reconcile with confirmed 8-K data.
-    // All days on or before the most recent confirmed 8-K date are considered
-    // "covered by actuals" — once we have an 8-K, everything prior is reconciled.
-    // Within each confirmed range, the 8-K total is allocated by volume weight.
-    // Days before the earliest confirmed range but still within the confirmed
-    // cutoff retain their estimates but are marked confirmed (actuals absorbed).
-
-    // Find the latest confirmed 8-K date — everything on or before this is "actual"
-    const latestConfirmedDate = confirmedRanges.length > 0
-      ? confirmedRanges[confirmedRanges.length - 1].end
-      : null;
-
-    // First, allocate confirmed totals within each 8-K range by volume weight
-    for (const range of confirmedRanges) {
-      const daysInRange = rawDays.filter(
-        (d) => d.date > range.start && d.date <= range.end
-      );
-      if (range.start === range.end) {
-        const singleDay = rawDays.find((d) => d.date === range.end);
-        if (singleDay && !daysInRange.includes(singleDay)) {
-          daysInRange.push(singleDay);
-        }
-      }
-
-      if (daysInRange.length === 0) continue;
-
-      const totalVolume = daysInRange.reduce((s, d) => s + d.strc_volume, 0);
-      if (totalVolume === 0) continue;
-
-      for (const day of daysInRange) {
-        const weight = day.strc_volume / totalVolume;
-        day.atm_proceeds = range.proceeds_usd * weight;
-        day.atm_source = "confirmed";
-      }
-    }
-
-    // Then, mark all remaining days on or before the latest 8-K as confirmed.
-    // These are days before the first 8-K range or between ranges that weren't
-    // explicitly covered — their estimate values are kept but shown as green
-    // (actuals) since the cumulative 8-K totals have validated the period.
-    if (latestConfirmedDate) {
-      for (const day of rawDays) {
-        if (day.date <= latestConfirmedDate && day.atm_source !== "confirmed") {
-          day.atm_source = "confirmed";
-        }
-      }
-    }
-
-    // Step 3: Compute final fields
-    return rawDays.map((d) => ({
-      date: d.date,
-      strc_volume: d.strc_volume,
-      mstr_volume: d.mstr_volume,
-      strc_price: d.strc_price,
-      avg_20d: d.avg_20d,
-      atm_proceeds_confirmed: d.atm_source === "confirmed" ? d.atm_proceeds / 1e6 : 0,
-      atm_proceeds_estimated: d.atm_source !== "confirmed" ? d.atm_proceeds / 1e6 : 0,
-      atm_btc: d.atm_proceeds / btcPrice,
-      atm_source: d.atm_source,
-    }));
-  }, [filteredVolume, atmEventMap, confirmedRanges, data?.volume_history, participationRate, btcPrice]);
+  }, [filteredVolume, btcPrice]);
 
   // Tick interval for X-axis
   const tickInterval = Math.max(1, Math.floor(chartData.length / 10));
@@ -417,7 +252,7 @@ export default function VolumeATMTracker() {
         </ResponsiveContainer>
       </div>
 
-      {/* Event Log + BTC Estimation */}
+      {/* Event Log + Issuance Engine Summary */}
       <div className="grid-2col">
         {/* ATM Event Log */}
         <div>
@@ -445,33 +280,33 @@ export default function VolumeATMTracker() {
           </div>
         </div>
 
-        {/* BTC Purchase Estimation Summary */}
+        {/* 8-K Issuance Engine Summary */}
         <div>
-          <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)", marginBottom: 8 }}>Estimated BTC Accumulation</div>
+          <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)", marginBottom: 8 }}>8-K Issuance Engine</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <MiniStat
-              label="Total ATM Proceeds (period)"
-              value={`$${chartData.reduce((s, d) => s + d.atm_proceeds_confirmed + d.atm_proceeds_estimated, 0).toFixed(0)}M`}
+              label="Weighted Daily Pace"
+              value={`$${(pace.total_daily / 1e6).toFixed(1)}M/day`}
             />
             <MiniStat
-              label="Est. BTC Purchased"
-              value={`${chartData.reduce((s, d) => s + d.atm_btc, 0).toFixed(1)} BTC`}
+              label="STRC Share of Proceeds"
+              value={`${(pace.strc_share * 100).toFixed(0)}%`}
             />
             <MiniStat
-              label="Avg BTC Price Used"
-              value={`$${btcPrice.toLocaleString()}`}
+              label="Conversion Rate (8-K)"
+              value={`${(pace.conversion_rate * 100).toFixed(0)}%`}
             />
             <MiniStat
-              label="Active Issuance Days"
-              value={`${chartData.filter(d => d.atm_source !== null).length} / ${chartData.length}`}
+              label="8-K Periods Used"
+              value={`${engineSummary.periods}`}
             />
             <MiniStat
               label="Confirmed vs Estimated"
-              value={`${chartData.filter(d => d.atm_source === "confirmed").length} / ${chartData.filter(d => d.atm_source === "estimated" || d.atm_source === "inferred").length}`}
+              value={`${chartData.filter(d => d.atm_source === "confirmed").length} / ${chartData.filter(d => d.atm_source === "estimated").length}`}
             />
             <MiniStat
-              label="Participation Rate"
-              value={`${(participationRate * 100).toFixed(1)}%`}
+              label="Backtest MAPE"
+              value={`${paceBacktest.mape.toFixed(1)}%`}
             />
           </div>
         </div>
@@ -509,81 +344,71 @@ export default function VolumeATMTracker() {
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Confirmed events</strong> (<Badge variant="green">8-K</Badge>): Sourced directly from SEC EDGAR 8-K filings
-              or official press releases. These report exact proceeds, shares issued, and weighted-average price.
-              Strategy typically files 8-Ks within 2–5 business days of issuance.
+              <strong style={{ color: "var(--t2)" }}>8-K-Derived Methodology</strong>: All estimation parameters are derived directly from
+              confirmed SEC 8-K filings — no assumed participation rates or mock data calibration. The issuance engine analyzes {engineSummary.periods} confirmed
+              8-K periods covering {engineSummary.total_trading_days} trading days and ${(engineSummary.total_proceeds / 1e9).toFixed(1)}B in total proceeds.
             </p>
 
-            {optimizedParams && (
-              <div style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, border: "1px solid var(--border)" }}>
-                <div style={{ fontWeight: 600, color: "var(--t2)", marginBottom: 6 }}>Auto-Optimized Parameters</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "4px 12px", fontSize: "var(--text-xs)" }}>
-                  <span>Participation Rate: <strong className="mono">{(optimizedParams.participation_rate * 100).toFixed(1)}%</strong></span>
-                  <span>High-Vol Threshold: <strong className="mono">{optimizedParams.high_conf_threshold}×</strong></span>
-                  <span>High-Vol Multiplier: <strong className="mono">{optimizedParams.high_conf_multiplier}×</strong></span>
-                  <span>BTC Conversion: <strong className="mono">{(optimizedParams.conversion_rate * 100).toFixed(0)}%</strong></span>
-                  <span>ATM Confidence: <strong className="mono">{optimizedParams.atm_confidence}%</strong></span>
-                  <span>BTC Confidence: <strong className="mono">{optimizedParams.btc_confidence}%</strong></span>
-                </div>
-                <div style={{ marginTop: 6, fontSize: "var(--text-xs)", color: "var(--t3)" }}>
-                  Parameters auto-calibrated by grid search across {CONFIRMED_STRC_ATM_EVENTS.length} confirmed 8-K filings.
-                  Recalibrates automatically when new 8-K data is added.
-                </div>
+            <div style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, border: "1px solid var(--border)" }}>
+              <div style={{ fontWeight: 600, color: "var(--t2)", marginBottom: 6 }}>8-K Confirmed Parameters</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "4px 12px", fontSize: "var(--text-xs)" }}>
+                <span>Weighted Daily Pace: <strong className="mono">${(pace.total_daily / 1e6).toFixed(1)}M</strong></span>
+                <span>STRC Daily Pace: <strong className="mono">${(pace.strc_daily / 1e6).toFixed(1)}M</strong></span>
+                <span>MSTR Daily Pace: <strong className="mono">${(pace.mstr_daily / 1e6).toFixed(1)}M</strong></span>
+                <span>Conversion Rate: <strong className="mono">{(pace.conversion_rate * 100).toFixed(0)}%</strong></span>
+                <span>STRC Share: <strong className="mono">{(pace.strc_share * 100).toFixed(0)}%</strong></span>
+                <span>Backtest MAPE: <strong className="mono">{paceBacktest.mape.toFixed(1)}%</strong></span>
               </div>
-            )}
+              <div style={{ marginTop: 6, fontSize: "var(--text-xs)", color: "var(--t3)" }}>
+                All parameters derived from {engineSummary.periods} confirmed 8-K filings via exponentially-weighted pace model (decay = 0.65).
+                Most recent periods carry more weight. Recalibrates automatically when new 8-K data is added.
+              </div>
+            </div>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (<Badge variant="amber">Est.</Badge>): Strategy&apos;s ATM programs operate
-              near-continuously — shares are issued on most trading days, not just during volume spikes. We estimate daily issuance
-              by applying an auto-optimized participation rate to total daily volume. On high-volume days (exceeding {optimizedParams?.high_conf_threshold ?? HIGH_CONFIDENCE_THRESHOLD}× the
-              20-day average), the participation rate is scaled up by {optimizedParams?.high_conf_multiplier ?? HIGH_CONFIDENCE_MULTIPLIER}× to reflect that elevated volume often
-              correlates with more aggressive issuance.
+              <strong style={{ color: "var(--t2)" }}>Confirmed events</strong> (<Badge variant="green">8-K</Badge>): Sourced directly from SEC EDGAR 8-K filings.
+              These report exact proceeds, shares issued, and weighted-average price. Strategy typically files 8-Ks within 2–5 business days of issuance.
+              For confirmed periods, the period total is allocated evenly across trading days.
+            </p>
+
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (<Badge variant="amber">Est.</Badge>): For days after the last confirmed
+              8-K period, the engine projects forward using the exponentially-weighted daily pace derived from confirmed data. Recent 8-K periods
+              carry exponentially more weight (decay factor 0.65), so the forecast adapts as Strategy&apos;s issuance intensity changes.
             </p>
 
             <p style={{ marginBottom: 10 }}>
               <strong style={{ color: "var(--t2)" }}>Estimation formula</strong>:
             </p>
             <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
-              <div>effective_rate = {(participationRate * 100).toFixed(1)}% × ({optimizedParams?.high_conf_multiplier ?? HIGH_CONFIDENCE_MULTIPLIER}× if volume &gt; {optimizedParams?.high_conf_threshold ?? HIGH_CONFIDENCE_THRESHOLD}× 20d_avg, else 1.0)</div>
-              <div>est_shares = daily_volume × effective_rate</div>
-              <div>est_proceeds = est_shares × VWAP</div>
-              <div>est_btc_purchased = est_proceeds × {((optimizedParams?.conversion_rate ?? 0.95) * 100).toFixed(0)}% ÷ btc_price</div>
+              <div>weighted_daily_pace = Σ(period_daily_proceeds × decay^rank × trading_days) / Σ(weights)</div>
+              <div>est_daily_proceeds = ${(pace.total_daily / 1e6).toFixed(1)}M (STRC: ${(pace.strc_daily / 1e6).toFixed(1)}M + MSTR: ${(pace.mstr_daily / 1e6).toFixed(1)}M)</div>
+              <div>est_btc_per_day = est_daily_proceeds × {(pace.conversion_rate * 100).toFixed(0)}% / btc_price</div>
             </div>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Self-optimizing model</strong>: All parameters are automatically calibrated by
-              grid-searching across {ATM_EVENT_COUNT} confirmed 8-K filings from SEC EDGAR. The optimizer tests {RATE_GRID_SIZE} participation
-              rates × {THRESHOLD_GRID_SIZE} thresholds × {MULTIPLIER_GRID_SIZE} multipliers × {CONVERSION_GRID_SIZE} conversion rates and selects the combination
-              that maximizes a combined ATM + BTC confidence score. When a new 8-K is filed, adding it
-              to the confirmed data automatically triggers recalibration — no manual tuning required.
+              <strong style={{ color: "var(--t2)" }}>Management guidance</strong>: Strategy management has guided ~25% participation rate
+              for ATM issuance relative to daily trading volume. This rate is used in the flywheel forecast engine when real
+              volume data is available from the database. The 8-K pace-based approach shown here is independent of volume data
+              and serves as the primary estimation methodology between confirmed filings.
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Recency-weighted scoring</strong>: Recent 8-K periods carry exponentially more weight
-              (decay factor 0.60). The 3 most recent periods contribute ~75% of the confidence score.
-              This adapts the model to Strategy&apos;s evolving ATM structure (e.g., dual-agent issuance,
-              extended trading hours) rather than anchoring to outdated patterns.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Downstream impact</strong>: ATM issuance estimation is the <em>root</em> of the
-              estimation flywheel. ATM proceeds feed into BTC purchase estimates, which feed into estimated
-              BTC holdings, which feed into mNAV and all downstream metrics. ATM confidence ({atmBacktest.confidence_score}%)
-              caps the confidence of every downstream estimate.
+              <strong style={{ color: "var(--t2)" }}>Cross-validation</strong>: Leave-one-out backtest across {paceBacktest.periods} 8-K periods
+              shows {paceBacktest.mape.toFixed(1)}% MAPE with {paceBacktest.bias > 0 ? "+" : ""}{paceBacktest.bias.toFixed(1)}% directional bias.
+              High variability in issuance pace across periods
+              makes precision challenging, but the recency-weighted model tracks Strategy&apos;s evolving pace.
             </p>
 
             <p style={{ marginBottom: 10 }}>
               <strong style={{ color: "var(--t2)" }}>8-K reconciliation</strong>: When a confirmed 8-K filing is received, it overrides all
-              prior daily estimates within its coverage period. The confirmed total proceeds are re-allocated across the trading days
-              in that range proportionally by each day&apos;s STRC volume. This ensures the chart always ties back to actuals once official
-              data is available, while preserving a realistic daily breakdown based on volume patterns.
+              prior daily estimates within its coverage period. Confirmed totals are allocated evenly across trading days in the period.
+              This ensures the chart always ties back to actuals once official data is available.
             </p>
 
-            <BacktestResults summary={atmBacktest} label="ATM Issuance" />
-
             <p style={{ margin: 0, marginTop: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: Estimates may overstate issuance on high-volume days driven by
-              market events (earnings, index rebalancing) rather than ATM activity. All estimates are provisional
+              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The pace model assumes issuance is relatively stable day-to-day.
+              In reality, issuance volume varies dramatically (e.g., $7.1M vs $1,180M in recent periods). All estimates are provisional
               and will be replaced by confirmed figures as 8-K filings are processed (typically 2–5 business days after issuance).
             </p>
           </div>

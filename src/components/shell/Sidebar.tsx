@@ -2,14 +2,20 @@
 
 import type { View } from "./DashboardShell";
 
+const STRC_SECTIONS = [
+  { id: "strc-market", label: "Market Summary" },
+  { id: "strc-fundamentals", label: "Fundamentals" },
+  { id: "strc-risk", label: "Risk Analysis" },
+  { id: "strc-rate", label: "Rate Engine" },
+  { id: "strc-volatility", label: "Volatility" },
+  { id: "strc-filings", label: "Filings" },
+];
+
 const NAV_SECTIONS = [
   {
     title: "MONITOR",
     items: [
-      { id: "overview" as View, label: "Overview" },
-      { id: "risk" as View, label: "Risk Analysis" },
-      { id: "rate" as View, label: "Rate Engine" },
-      { id: "volatility" as View, label: "Volatility" },
+      { id: "strc" as View, label: "STRC", subItems: STRC_SECTIONS },
     ],
   },
   {
@@ -28,6 +34,13 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ activeView, onNavigate, open, onClose }: SidebarProps) {
+  const scrollToSection = (sectionId: string) => {
+    const el = document.getElementById(sectionId);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth" });
+    }
+  };
+
   return (
     <>
       {/* Mobile overlay */}
@@ -52,17 +65,35 @@ export default function Sidebar({ activeView, onNavigate, open, onClose }: Sideb
             <div key={section.title} className="sidebar-section">
               <div className="sidebar-section-title">{section.title}</div>
               {section.items.map((item) => (
-                <button
-                  key={item.id}
-                  className={`sidebar-item ${activeView === item.id ? "sidebar-item--active" : ""}`}
-                  onClick={() => {
-                    onNavigate(item.id);
-                    onClose();
-                  }}
-                  aria-current={activeView === item.id ? "page" : undefined}
-                >
-                  {item.label}
-                </button>
+                <div key={item.id}>
+                  <button
+                    className={`sidebar-item ${activeView === item.id ? "sidebar-item--active" : ""}`}
+                    onClick={() => {
+                      onNavigate(item.id);
+                      onClose();
+                    }}
+                    aria-current={activeView === item.id ? "page" : undefined}
+                  >
+                    {item.label}
+                  </button>
+                  {/* Sub-items for section scrolling */}
+                  {activeView === item.id && "subItems" in item && item.subItems && (
+                    <div className="sidebar-subitems">
+                      {item.subItems.map((sub) => (
+                        <button
+                          key={sub.id}
+                          className="sidebar-subitem"
+                          onClick={() => {
+                            scrollToSection(sub.id);
+                            onClose();
+                          }}
+                        >
+                          {sub.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           ))}

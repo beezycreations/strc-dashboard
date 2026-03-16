@@ -4,23 +4,19 @@ import { useState, useCallback } from "react";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 
-export type View =
-  | "overview"
-  | "risk"
-  | "rate"
-  | "volatility"
-  | "positions";
+export type View = "strc" | "positions";
 
 interface DashboardShellProps {
   children: (activeView: View) => React.ReactNode;
 }
 
 export default function DashboardShell({ children }: DashboardShellProps) {
-  const [activeView, setActiveView] = useState<View>("overview");
+  const [activeView, setActiveView] = useState<View>("strc");
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const handleNavigate = useCallback((view: View) => {
     setActiveView(view);
+    window.scrollTo({ top: 0, behavior: "instant" });
   }, []);
 
   return (

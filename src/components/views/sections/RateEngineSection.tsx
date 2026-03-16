@@ -1,6 +1,5 @@
 "use client";
 
-import { useSnapshot, useHistory } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
 import { StatRow } from "@/src/components/ui";
 import { fmtPct, fmtBps } from "@/src/lib/utils/format";
@@ -10,21 +9,19 @@ import {
 } from "recharts";
 import { colors, rechartsDefaults, STRC_IPO_DATE } from "@/src/lib/chart-config";
 
-export default function RateEngineView() {
-  const { data: snap, isLoading } = useSnapshot();
-  const { data: history } = useHistory("all");
+/* eslint-disable @typescript-eslint/no-explicit-any */
+interface Props {
+  snap: any;
+  history: any;
+}
 
-  if (isLoading || !snap) {
-    return <div className="skeleton" style={{ height: 400 }} />;
-  }
-
+export default function RateEngineSection({ snap, history }: Props) {
   const s = snap;
   const rawRates = history?.rates ?? [];
   const sofrForward = history?.sofr_forward ?? [];
   const dividends = history?.dividends ?? [];
 
   // Build rate lookup from dividend schedule (authoritative, DB-backed)
-  // Rate takes effect on record date (15th). Before 15th, prior month's rate applies.
   const divRateByMonth = new Map<string, number>();
   for (const d of (dividends as Array<{ periodSort: string; ratePct: number }>)) {
     divRateByMonth.set(d.periodSort, d.ratePct);
@@ -50,16 +47,11 @@ export default function RateEngineView() {
   });
 
   // Rate floor projection (12 months, 3 scenarios)
-  // STRC rate = SOFR + spread. Scenarios model different SOFR cut paths.
   const spread = s.strc_rate_pct - s.sofr_1m_pct;
   const projectionData = Array.from({ length: 13 }, (_, m) => {
-    // Bear: SOFR rises 50bps over 12mo (hawkish Fed)
     const bearSofr = s.sofr_1m_pct + m * (0.5 / 12);
-    // Base: SOFR declines 100bps over 12mo (gradual easing)
     const baseSofr = Math.max(0, s.sofr_1m_pct - m * (1.0 / 12));
-    // Bull: SOFR declines 250bps over 12mo (aggressive cuts)
     const bullSofr = Math.max(0, s.sofr_1m_pct - m * (2.5 / 12));
-
     return {
       month: m,
       bear: parseFloat((bearSofr + spread).toFixed(2)),
@@ -68,23 +60,23 @@ export default function RateEngineView() {
     };
   });
 
-  // Auto-scale Y-axis to fit projection data with padding
   const allProjectionValues = projectionData.flatMap((d) => [d.bear, d.base, d.bull]);
   const projYMin = Math.floor(Math.min(...allProjectionValues) - 0.5);
   const projYMax = Math.ceil(Math.max(...allProjectionValues) + 0.5);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <span style={{ fontSize: "var(--text-lg)", fontWeight: 600 }}>Rate Engine</span>
-        <span className="badge badge-violet">{fmtPct(s.strc_rate_pct)} Current</span>
-        <span className="badge badge-blue">SOFR {fmtPct(s.sofr_1m_pct)}</span>
-        <span className="badge badge-neutral">{fmtBps(s.strc_rate_since_ipo_bps)} since IPO</span>
+    <section id="strc-rate" className="section-anchor">
+      <div className="section-header">
+        Rate Engine
+        <span style={{ marginLeft: 12, display: "inline-flex", gap: 8 }}>
+          <span className="badge badge-violet">{fmtPct(s.strc_rate_pct)} Current</span>
+          <span className="badge badge-blue">SOFR {fmtPct(s.sofr_1m_pct)}</span>
+          <span className="badge badge-neutral">{fmtBps(s.strc_rate_since_ipo_bps)} since IPO</span>
+        </span>
       </div>
 
       {/* Rate History chart */}
-      <div className="card">
+      <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Rate History</div>
         <div style={{ height: 280 }}>
           <ResponsiveContainer width="100%" height="100%">
@@ -101,7 +93,7 @@ export default function RateEngineView() {
       </div>
 
       {/* Dividend Schedule Table */}
-      <div className="card" style={{ overflowX: "auto" }}>
+      <div className="card" style={{ overflowX: "auto", marginBottom: 20 }}>
         <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Dividend Schedule</div>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "var(--text-sm)" }}>
           <thead>
@@ -135,7 +127,7 @@ export default function RateEngineView() {
       </div>
 
       {/* Spread over SOFR */}
-      <div className="card">
+      <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>
           Spread over SOFR
           <span className="mono" style={{ marginLeft: 8, fontSize: "var(--text-sm)", color: "var(--amber)", fontWeight: 600 }}>
@@ -227,6 +219,6 @@ export default function RateEngineView() {
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

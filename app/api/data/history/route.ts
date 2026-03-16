@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { desc, gte } from "drizzle-orm";
+import {
+  CONVERT_DEBT_USD,
+  CURRENT_PREF_NOTIONAL,
+  CASH_BALANCE,
+  MSTR_SHARES_AT_FILING,
+} from "@/src/lib/data/capital-structure";
 
 export const revalidate = 0;
 
@@ -18,6 +24,7 @@ function generateMockTimeSeries(days: number) {
   const mnavHistory: { date: string; mnav: number; mnav_low: number; mnav_high: number }[] = [];
   const volHistory: { date: string; vol_30d_strc: number; vol_30d_mstr: number; vol_30d_btc: number }[] = [];
   const corrHistory: { date: string; corr_strc_mstr: number; corr_strc_btc: number }[] = [];
+  const btcCoverageHistory: { date: string; btc_coverage_ratio: number }[] = [];
 
   const totalDays = Math.ceil((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
 
@@ -59,7 +66,12 @@ function generateMockTimeSeries(days: number) {
     btcPrice = Math.max(55000, Math.min(85000, btcPrice + (Math.random() - 0.47) * 1200));
     strfPrice = Math.max(82, Math.min(96, strfPrice + (Math.random() - 0.49) * 0.25));
     strkPrice = Math.max(88, Math.min(105, strkPrice + (Math.random() - 0.48) * 0.35));
-    mnav = Math.max(0.9, Math.min(1.5, mnav + (Math.random() - 0.48) * 0.02));
+    // mNAV derived from Strategy formula: EV / BTC Reserve
+    // EV = MSTR MCap + converts + preferred − cash (from shared capital-structure module)
+    const mockMstrMcap = mstrPrice * MSTR_SHARES_AT_FILING;
+    const mockEV = mockMstrMcap + CONVERT_DEBT_USD + CURRENT_PREF_NOTIONAL - CASH_BALANCE;
+    const mockBtcReserve = btcPrice * 761068;
+    mnav = mockBtcReserve > 0 ? mockEV / mockBtcReserve : 1.0;
 
     // STRC rate from dividend schedule (rate takes effect on record date = 15th)
     const month = dateStr.slice(0, 7);
@@ -101,14 +113,29 @@ function generateMockTimeSeries(days: number) {
       corr_strc_mstr: +(0.15 + Math.random() * 0.35).toFixed(4),
       corr_strc_btc: +(0.08 + Math.random() * 0.3).toFixed(4),
     });
+
+    // BTC coverage ratio: derived from formula (same as snapshot)
+    // btcNav / (strcAtmDeployed + annualObligations * 3)
+    const mockBtcHoldings = 761068;
+    const mockBtcNav = btcPrice * mockBtcHoldings;
+    const mockStrcAtmDeployed = 3_842_800_000;
+    const mockAnnualObligations = 689_000_000;
+    const mockCoverageDenom = mockStrcAtmDeployed + mockAnnualObligations * 3;
+    const covRatio = mockCoverageDenom > 0 ? mockBtcNav / mockCoverageDenom : 0;
+    btcCoverageHistory.push({
+      date: dateStr,
+      btc_coverage_ratio: +covRatio.toFixed(4),
+    });
   }
 
+  // SOFR forward curve — anchored to mock 1M rate with term spread
+  const mockSofr1m = 4.3;
   const sofrForward = [
-    { term: "1M", rate: 4.3 },
-    { term: "3M", rate: 4.15 },
-    { term: "6M", rate: 3.95 },
-    { term: "1Y", rate: 3.7 },
-    { term: "2Y", rate: 3.45 },
+    { term: "1M", rate: mockSofr1m },
+    { term: "3M", rate: parseFloat((mockSofr1m - 0.15).toFixed(2)) },
+    { term: "6M", rate: parseFloat((mockSofr1m - 0.35).toFixed(2)) },
+    { term: "1Y", rate: parseFloat((mockSofr1m - 0.60).toFixed(2)) },
+    { term: "2Y", rate: parseFloat((mockSofr1m - 0.85).toFixed(2)) },
   ];
 
   // Mock dividend schedule
@@ -123,7 +150,7 @@ function generateMockTimeSeries(days: number) {
     { period: "Aug 2025", periodSort: "2025-08", recordDate: "08/15/2025", payoutDate: "08/29/2025", ratePct: 9.00, dividendPerShare: 0.80, isCurrent: false, isProRated: true, announcedDate: "2025-07-29" },
   ];
 
-  return { prices, rates, mnav: mnavHistory, vol: volHistory, corr: corrHistory, sofr_forward: sofrForward, dividends: mockDividends };
+  return { prices, rates, mnav: mnavHistory, vol: volHistory, corr: corrHistory, btc_coverage: btcCoverageHistory, sofr_forward: sofrForward, dividends: mockDividends };
 }
 
 export async function GET(request: NextRequest) {
@@ -272,12 +299,22 @@ export async function GET(request: NextRequest) {
         corr_strc_btc: parseFloat(m.corrStrcBtc30d ?? "0"),
       }));
 
+    const btcCoverageHistory = metricRows
+      .filter((m) => m.btcCoverageRatio)
+      .map((m) => ({
+        date: m.date,
+        btc_coverage_ratio: parseFloat(m.btcCoverageRatio!),
+      }));
+
+    // Build SOFR forward curve anchored to latest 1M rate
+    // Term spreads reflect market expectation of easing (inverted when rates expected to fall)
+    const latestSofr1m = sofrRows.length > 0 ? parseFloat(sofrRows[sofrRows.length - 1].sofr1mPct) : 4.3;
     const sofrForward = [
-      { term: "1M", rate: sofrRows.length > 0 ? parseFloat(sofrRows[sofrRows.length - 1].sofr1mPct) : 4.3 },
-      { term: "3M", rate: 4.15 },
-      { term: "6M", rate: 3.95 },
-      { term: "1Y", rate: 3.7 },
-      { term: "2Y", rate: 3.45 },
+      { term: "1M", rate: latestSofr1m },
+      { term: "3M", rate: parseFloat((latestSofr1m - 0.15).toFixed(2)) },
+      { term: "6M", rate: parseFloat((latestSofr1m - 0.35).toFixed(2)) },
+      { term: "1Y", rate: parseFloat((latestSofr1m - 0.60).toFixed(2)) },
+      { term: "2Y", rate: parseFloat((latestSofr1m - 0.85).toFixed(2)) },
     ];
 
     return NextResponse.json({
@@ -286,6 +323,7 @@ export async function GET(request: NextRequest) {
       mnav: mnavHistory,
       vol: volHistory,
       corr: corrHistory,
+      btc_coverage: btcCoverageHistory,
       sofr_forward: sofrForward,
       dividends,
     });

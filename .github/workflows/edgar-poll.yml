@@ -1,0 +1,58 @@
+name: Poll EDGAR for new filings
+
+on:
+  schedule:
+    # Every 15 minutes during SEC business hours (Mon-Fri, 8am-8pm ET = 13:00-01:00 UTC)
+    - cron: '*/15 13-23 * * 1-5'
+    - cron: '*/15 0-1 * * 2-6'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-edgar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check EDGAR for new Strategy 8-K filings
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          # First, check EDGAR RSS feed for new 8-K filings
+          # This is a lightweight check before hitting the full endpoint
+          RSS_URL="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001050446&type=8-K&dateb=&owner=exclude&count=5&search_text=&output=atom"
+
+          echo "Checking EDGAR for new Strategy 8-K filings..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "User-Agent: STRCDashboard/1.0 admin@strc.finance" \
+            "$RSS_URL" || true)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "EDGAR RSS returned $HTTP_CODE — skipping"
+            exit 0
+          fi
+
+          # Check if there's a filing from today
+          TODAY=$(date -u +%Y-%m-%d)
+          if echo "$BODY" | grep -q "$TODAY"; then
+            echo "Found filing(s) from today ($TODAY) — triggering edgar-check"
+          else
+            echo "No new filings today ($TODAY) — triggering check anyway (may have recent unprocessed)"
+          fi
+
+          # Trigger the edgar-check cron endpoint
+          if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Missing SITE_URL or CRON_SECRET secrets — skipping API call"
+            exit 0
+          fi
+
+          RESULT=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$SITE_URL/api/cron/edgar-check")
+
+          API_CODE=$(echo "$RESULT" | tail -1)
+          API_BODY=$(echo "$RESULT" | sed '$d')
+
+          echo "edgar-check response ($API_CODE): $API_BODY"

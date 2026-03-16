@@ -1,9 +1,15 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { useVolumeAtm, useSnapshot } from "@/src/lib/hooks/use-api";
+import { useSnapshot } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
-import BacktestResults from "@/src/components/ui/BacktestResults";
+import {
+  forecastBtcHoldings,
+  getWeightedDailyPace,
+  getEngineSummary,
+  backtestPaceModel,
+  getDailyEstimates,
+} from "@/src/lib/calculators/issuance-engine";
 import {
   ComposedChart,
   Bar,
@@ -21,108 +27,19 @@ import {
   LATEST_CONFIRMED_BTC,
   LATEST_CONFIRMED_DATE,
 } from "@/src/lib/data/confirmed-purchases";
-import {
-  buildBtcPurchaseBacktestSimple,
-  buildAtmIssuanceBacktest,
-  optimizeBacktestParams,
-  estimateBtcHoldings,
-  type EstimatedHoldings,
-  type OptimizedParams,
-} from "@/src/lib/calculators/backtest";
-
-interface CumulativeDay {
-  date: string;
-  strc_cumulative_usd: number;
-  mstr_cumulative_usd: number;
-}
-
-interface AtmEvent {
-  date: string;
-  proceeds_usd: number;
-  shares_issued: number;
-  avg_price: number;
-  is_estimated: boolean;
-}
-
-interface VolumeDay {
-  date: string;
-  strc_volume: number;
-  strc_price: number;
-  mstr_volume: number;
-}
-
-// Default participation rate — auto-optimized at runtime
-const DEFAULT_PARTICIPATION_RATE = 0.030;
 
 export default function BtcPurchaseChart() {
-  const { data, isLoading } = useVolumeAtm();
-  const { data: snap } = useSnapshot();
+  const { data: snap, isLoading } = useSnapshot();
   const [range, setRange] = useState<"3m" | "6m" | "1y" | "all">("3m");
   const [showMethodology, setShowMethodology] = useState(false);
 
   const btcPrice = snap?.btc_price ?? 83000;
 
-  // AUTO-OPTIMIZING BACKTEST: Same optimizer as VolumeATMTracker — cached,
-  // so both components share the same optimized parameters from the grid search.
-  const { atmBacktest, btcBacktest, optimizedParams } = useMemo(() => {
-    const allVolume = (data?.volume_history ?? []) as VolumeDay[];
-    const optimized = optimizeBacktestParams(allVolume);
-
-    if (optimized.params.atm_confidence > 0) {
-      return {
-        atmBacktest: optimized.atmSummary,
-        btcBacktest: optimized.btcSummary,
-        optimizedParams: optimized.params,
-      };
-    }
-
-    // Fallback: use mock ATM events for dev/demo mode
-    const events = (data?.atm_events ?? []) as AtmEvent[];
-    const confirmed = events
-      .filter((e) => !e.is_estimated)
-      .sort((a, b) => a.date.localeCompare(b.date));
-    const baseRate = data?.kpi?.participation_rate_current ?? DEFAULT_PARTICIPATION_RATE;
-
-    let atmResult = buildAtmIssuanceBacktest([]);
-    if (confirmed.length >= 3) {
-      const pairs = confirmed.map((evt, idx) => {
-        const periodStart = idx > 0
-          ? confirmed[idx - 1].date
-          : allVolume.length > 0 ? allVolume[0].date : evt.date;
-        const periodVolume = allVolume.filter((v) => v.date > periodStart && v.date <= evt.date);
-        let totalEst = 0;
-        for (const vol of periodVolume) {
-          const fullIdx = allVolume.indexOf(vol);
-          const lookback = allVolume.slice(Math.max(0, fullIdx - 19), fullIdx + 1);
-          const avg20d = lookback.length > 0
-            ? lookback.reduce((s, x) => s + x.strc_volume, 0) / lookback.length
-            : vol.strc_volume;
-          const isHigh = vol.strc_volume > avg20d * 1.5;
-          const rate = isHigh ? baseRate * 1.5 : baseRate;
-          totalEst += vol.strc_volume * rate * vol.strc_price;
-        }
-        return { date: evt.date, actual_proceeds: evt.proceeds_usd, estimated_proceeds: totalEst };
-      });
-      atmResult = buildAtmIssuanceBacktest(pairs);
-    }
-
-    return {
-      atmBacktest: atmResult,
-      btcBacktest: buildBtcPurchaseBacktestSimple(0.95, atmResult.confidence_score),
-      optimizedParams: null as OptimizedParams | null,
-    };
-  }, [data?.atm_events, data?.volume_history, data?.kpi?.participation_rate_current]);
-
-  // Step 3: Compute estimated BTC holdings (feeds mNAV downstream)
-  const holdings: EstimatedHoldings = useMemo(
-    () => estimateBtcHoldings(
-      (data?.cumulative_atm ?? []) as CumulativeDay[],
-      btcPrice,
-      optimizedParams?.conversion_rate ?? 0.95,
-      atmBacktest.confidence_score
-    ),
-    [data?.cumulative_atm, btcPrice, atmBacktest.confidence_score, optimizedParams?.conversion_rate]
-  );
+  // 8-K-derived engine data (no mock dependency)
+  const holdings = useMemo(() => forecastBtcHoldings(btcPrice), [btcPrice]);
+  const engineSummary = useMemo(() => getEngineSummary(), []);
+  const pace = useMemo(() => getWeightedDailyPace(), []);
+  const paceBacktest = useMemo(() => backtestPaceModel(), []);
 
   const chartData = useMemo(() => {
     // Determine date range
@@ -169,33 +86,24 @@ export default function BtcPurchaseChart() {
       });
     }
 
-    // After the last confirmed purchase, add daily estimates from ATM data
-    const cumulative = (data?.cumulative_atm ?? []) as CumulativeDay[];
-    if (cumulative.length >= 2) {
+    // After the last confirmed purchase, add daily estimates from issuance engine
+    const todayStr = now.toISOString().slice(0, 10);
+    if (LATEST_CONFIRMED_DATE < todayStr) {
+      const estimates = getDailyEstimates(LATEST_CONFIRMED_DATE, todayStr, btcPrice);
+      const postConfirmed = estimates.filter((e) => e.date > LATEST_CONFIRMED_DATE);
+
       let runningBtc = LATEST_CONFIRMED_BTC;
 
-      for (let i = 1; i < cumulative.length; i++) {
-        const prev = cumulative[i - 1];
-        const curr = cumulative[i];
-
-        // Only add estimates for dates after the last confirmed purchase
-        if (curr.date <= LATEST_CONFIRMED_DATE) continue;
-        if (curr.date < cutoffStr) continue;
-
-        const dailyMstrAtm = Math.max(0, curr.mstr_cumulative_usd - prev.mstr_cumulative_usd);
-        const dailyStrcAtm = Math.max(0, curr.strc_cumulative_usd - prev.strc_cumulative_usd);
-        // Strategy deploys ~95% of all ATM proceeds to BTC
-        const totalAtmUsd = (dailyMstrAtm + dailyStrcAtm) * 0.95;
-        const estBtc = totalAtmUsd / btcPrice;
-
-        if (estBtc > 0) {
-          runningBtc += estBtc;
+      for (const est of postConfirmed) {
+        if (est.date < cutoffStr) continue;
+        if (est.btc_estimate > 0) {
+          runningBtc += est.btc_estimate;
           result.push({
-            date: curr.date,
+            date: est.date,
             btc_confirmed: 0,
-            btc_estimated: estBtc,
+            btc_estimated: est.btc_estimate,
             btc_cumulative: runningBtc,
-            cost_m: totalAtmUsd / 1e6,
+            cost_m: est.total_proceeds / 1e6,
             avg_cost: btcPrice,
             source: "estimated",
           });
@@ -206,14 +114,13 @@ export default function BtcPurchaseChart() {
     // Sort by date
     result.sort((a, b) => a.date.localeCompare(b.date));
 
-    // Ensure cumulative line is monotonically correct by forward-filling
-    // For "all" view, insert the starting point if needed
+    // Ensure cumulative line is monotonically correct
     if (result.length > 0 && result[0].btc_cumulative === 0) {
       result[0].btc_cumulative = startingCumulative + result[0].btc_confirmed;
     }
 
     return result;
-  }, [data?.cumulative_atm, range, btcPrice]);
+  }, [range, btcPrice]);
 
   const tickInterval = Math.max(1, Math.floor(chartData.length / 12));
 
@@ -228,7 +135,7 @@ export default function BtcPurchaseChart() {
   const totalCostAll = CONFIRMED_PURCHASES.reduce((s, p) => s + p.cost_m, 0);
   const avgCostBasis = totalCostAll > 0 ? (totalCostAll * 1e6) / LATEST_CONFIRMED_BTC : 0;
 
-  if (isLoading || !data) {
+  if (isLoading) {
     return <div className="card"><div className="skeleton" style={{ height: 480 }} /></div>;
   }
 
@@ -448,38 +355,32 @@ export default function BtcPurchaseChart() {
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>The Estimation Flywheel Chain</strong>: BTC purchase estimates are <em>downstream</em> of
-              ATM issuance estimates. The full chain is:
+              <strong style={{ color: "var(--t2)" }}>The 8-K Estimation Chain</strong>: BTC purchase estimates are derived from the unified
+              issuance engine, which computes all parameters directly from confirmed 8-K filings:
             </p>
             <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
-              <div>1. ATM issuance est. (volume × {optimizedParams ? `${(optimizedParams.participation_rate * 100).toFixed(1)}%` : "participation rate"} × price)</div>
-              <div>   ↓ ATM confidence: {atmBacktest.confidence_score}% {optimizedParams ? "(auto-optimized)" : ""}</div>
-              <div>2. BTC purchase est. (ATM proceeds × {optimizedParams ? `${(optimizedParams.conversion_rate * 100).toFixed(0)}%` : "95%"} / btc_price)</div>
-              <div>   ↓ BTC confidence capped by ATM: {btcBacktest.confidence_score}%</div>
-              <div>3. Est. BTC holdings = {holdings.confirmed_btc.toLocaleString()} confirmed + {holdings.estimated_btc_since.toLocaleString()} est. = {holdings.total_estimated_btc.toLocaleString()}</div>
-              <div>   ↓ Holdings confidence: {holdings.confidence_score}%</div>
+              <div>1. 8-K confirmed data → exponentially-weighted daily pace</div>
+              <div>   Weighted daily proceeds: ${(pace.total_daily / 1e6).toFixed(1)}M (STRC: {(pace.strc_share * 100).toFixed(0)}% + MSTR: {((1 - pace.strc_share) * 100).toFixed(0)}%)</div>
+              <div>2. Daily proceeds × {(pace.conversion_rate * 100).toFixed(0)}% conversion → BTC/day at current price</div>
+              <div>   Est. BTC/day: {(pace.total_daily * pace.conversion_rate / btcPrice).toFixed(1)} BTC @ ${btcPrice.toLocaleString()}</div>
+              <div>3. Confirmed {holdings.confirmed_btc.toLocaleString()} BTC + {holdings.estimated_btc_since.toLocaleString()} est. ({holdings.forecast_days} trading days)</div>
+              <div>   = {holdings.total_estimated_btc.toLocaleString()} total estimated holdings</div>
+              <div>   Confidence: {holdings.confidence}% ({holdings.confidence_label})</div>
               <div>4. Feeds → mNAV, BTC coverage, impairment calculations</div>
             </div>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Why confidence is connected</strong>: BTC purchase accuracy cannot exceed ATM
-              estimation accuracy — if we don&apos;t know the ATM proceeds precisely, we can&apos;t know the BTC purchased
-              precisely. The confidence score propagates downward through the chain and degrades further with each
-              day since the last confirmed 8-K ({holdings.confirmed_date}).
+              <strong style={{ color: "var(--t2)" }}>Why 8-K-derived, not volume-based</strong>: The issuance engine derives daily pace
+              directly from confirmed 8-K filings, avoiding any dependency on trading volume data (which may be unavailable or mock).
+              The conversion rate ({(pace.conversion_rate * 100).toFixed(0)}%) is observed from 8-K data, not assumed.
+              Management has guided ~25% ATM participation relative to daily trading volume; when real DB volume data is available,
+              this rate is used as an alternative estimation path.
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimated holdings → mNAV</strong>: The estimated total BTC
-              ({holdings.total_estimated_btc.toLocaleString()} BTC) is used to compute real-time mNAV and other
-              downstream metrics. This provides the closest approximation to Strategy&apos;s actual position between
-              8-K filings, rather than using stale confirmed figures.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Self-optimizing model</strong>: All parameters (participation rate, high-volume
-              threshold, conversion rate) are automatically calibrated by grid search against confirmed 8-K filings.
-              When a new 8-K is filed, adding it to the confirmed data triggers automatic recalibration —
-              the model trains itself with each new data point to improve predictive accuracy over time.
+              <strong style={{ color: "var(--t2)" }}>Cross-validation</strong>: Leave-one-out backtest across {paceBacktest.periods} 8-K periods
+              yields {paceBacktest.mape.toFixed(1)}% MAPE with {paceBacktest.bias > 0 ? "+" : ""}{paceBacktest.bias.toFixed(1)}% bias.
+              The model recalibrates automatically when new 8-K data is added to the confirmed data files.
             </p>
 
             <p style={{ marginBottom: 10 }}>
@@ -488,14 +389,11 @@ export default function BtcPurchaseChart() {
               to 100%. Strategy typically files 8-Ks weekly, so estimates are usually outstanding for 5–10 trading days.
             </p>
 
-            <BacktestResults summary={btcBacktest} label="BTC Purchase" />
-
             <p style={{ margin: 0, marginTop: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The BTC conversion rate ({optimizedParams ? `${(optimizedParams.conversion_rate * 100).toFixed(0)}%` : "95%"}, auto-optimized) is an approximation — Strategy
-              may retain a portion of proceeds for operating expenses, debt service, or cash reserves. Estimates
-              also assume ATM proceeds are deployed at the current BTC price, whereas actual purchases may be
-              executed at different prices over multiple days. All estimates are provisional and will be replaced
-              by confirmed figures as 8-K filings are processed.
+              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The pace model assumes relatively stable issuance, but actual
+              daily proceeds vary dramatically ($1.4M–$236M/day across confirmed periods). The conversion
+              rate may vary as Strategy retains proceeds for operating expenses or debt service. All estimates are
+              provisional and will be replaced by confirmed figures as 8-K filings are processed.
             </p>
           </div>
         )}

@@ -19,9 +19,29 @@ import {
 } from "@/src/lib/calculators/volatility";
 import { computeTrancheMetrics } from "@/src/lib/calculators/tranche-metrics";
 import { today } from "@/src/lib/utils/fetchers";
+import {
+  computeMnav as computeMnavShared,
+  mnavRegimeFromValue,
+  ANNUAL_OBLIGATIONS,
+} from "@/src/lib/data/capital-structure";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
+
+// ── Capital structure imported from shared module ────────────────────
+// All constants in src/lib/data/capital-structure.ts — single source of truth
+
+/** Wrapper for daily-metrics that returns null on invalid inputs */
+function computeMnav(params: {
+  mstrMarketCap: number;
+  btcHoldings: number;
+  btcPrice: number;
+  strcAtmDeployed?: number;
+}): number | null {
+  const { mstrMarketCap, btcHoldings, btcPrice } = params;
+  if (btcHoldings <= 0 || btcPrice <= 0 || mstrMarketCap <= 0) return null;
+  return computeMnavShared({ mstrMarketCap, btcHoldings, btcPrice });
+}
 
 export async function GET(request: NextRequest) {
   if (
@@ -109,7 +129,7 @@ export async function GET(request: NextRequest) {
         getEodPrices("SPY", 260),
       ]);
 
-    // ── mNAV ──
+    // ── mNAV (Strategy methodology: EV / BTC Reserve) ──
     const btcCount = latestHoldings.btcCount;
     const latestBtcPrice = btcPrices.length > 0 ? btcPrices[btcPrices.length - 1] : 0;
     const latestMstrPrice = mstrPrices.length > 0 ? mstrPrices[mstrPrices.length - 1] : 0;
@@ -123,12 +143,23 @@ export async function GET(request: NextRequest) {
         ? latestMstrPrice * mstrShares
         : Number(latestCapStructure.mstrMarketCapUsd ?? 0);
 
-    const mnav = mstrMarketCap > 0 ? btcNavUsd / mstrMarketCap : null;
+    const strcAtmDeployed = Number(latestCapStructure.strcAtmDeployedUsd ?? 0);
 
-    // ── BTC coverage ratio ──
-    const totalObligations = Number(latestCapStructure.totalAnnualObligations ?? 0);
+    const mnav = computeMnav({
+      mstrMarketCap,
+      btcHoldings: btcCount,
+      btcPrice: latestBtcPrice,
+      strcAtmDeployed,
+    });
+
+    // ── BTC coverage ratio (same formula as snapshot) ──
+    // Denominator = STRC ATM Deployed + 3× Annual Obligations
+    const totalObligations = Number(latestCapStructure.totalAnnualObligations ?? 0) || ANNUAL_OBLIGATIONS;
+    const coverageDenom = strcAtmDeployed + totalObligations * 3;
     const btcCoverageRatio =
-      totalObligations > 0 ? btcNavUsd / totalObligations : null;
+      coverageDenom > 0 && btcNavUsd > 0
+        ? parseFloat((btcNavUsd / coverageDenom).toFixed(4))
+        : null;
 
     // ── USD reserve months ──
     const usdReserve = Number(latestCapStructure.usdReserveUsd ?? 0);
@@ -286,9 +317,10 @@ export async function GET(request: NextRequest) {
       strcRatePct != null && strcPrice != null && strcPrice > 0
         ? (strcRatePct / 100) * (100 / strcPrice) * 100
         : null;
+    // Par spread = (STRC price − $100 par) × 100 bps (same as snapshot)
     const strcParSpreadBps =
-      strcEffectiveYield != null && sofrPct != null
-        ? (strcEffectiveYield - sofrPct) * 100
+      strcPrice != null
+        ? parseFloat(((strcPrice - 100) * 100).toFixed(0))
         : null;
 
     // ── Sharpe Ratio — STRC ──
@@ -343,14 +375,8 @@ export async function GET(request: NextRequest) {
         ? Number(latestVwapRow.volume) * Number(latestVwapRow.price)
         : null;
 
-    // ── mNAV regime ──
-    let mnavRegime: string | null = null;
-    if (mnav != null) {
-      if (mnav >= 1.5) mnavRegime = "premium";
-      else if (mnav >= 1.0) mnavRegime = "par";
-      else if (mnav >= 0.7) mnavRegime = "discount";
-      else mnavRegime = "distressed";
-    }
+    // ── mNAV regime (same thresholds as snapshot) ──
+    const mnavRegime = mnav != null ? mnavRegimeFromValue(mnav) : null;
 
     // ── Write to daily_metrics ──
     const toStr = (v: number | null): string | null =>

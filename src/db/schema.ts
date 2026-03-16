@@ -296,6 +296,29 @@ export const mstrBtcPurchases = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// strc_filings — STRC 8-K filing data (auto-populated by EDGAR cron)
+// ---------------------------------------------------------------------------
+export const strcFilings = pgTable(
+  "strc_filings",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    accessionNo: varchar("accession_no", { length: 30 }).notNull().unique(),
+    filingDate: date("filing_date").notNull(),
+    type: varchar({ length: 10 }).notNull(), // "IPO" or "ATM"
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    sharesSold: integer("shares_sold").notNull(),
+    netProceeds: numeric("net_proceeds", { precision: 20, scale: 2 }).notNull(),
+    btcPurchased: integer("btc_purchased"),
+    avgBtcPrice: numeric("avg_btc_price", { precision: 18, scale: 2 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_strc_filings_date").on(sql`${t.filingDate} DESC`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // accrued_dividends
 // ---------------------------------------------------------------------------
 export const accruedDividends = pgTable(

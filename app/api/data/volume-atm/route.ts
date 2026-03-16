@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { desc, gte } from "drizzle-orm";
+import { ATM_AUTHORIZED, ATM_REMAINING, ATM_DEPLOYED } from "@/src/lib/data/capital-structure";
 
 export const revalidate = 0;
 
@@ -154,16 +155,16 @@ const MOCK_RESPONSE = {
     strc_volume_avg_5d: 3_800_000,
     strc_volume_avg_20d: 3_100_000,
     strc_volume_ratio: 0,
-    strc_atm_deployed_usd: 3_400_000_000,
-    strc_atm_authorized_usd: 4_200_000_000,
-    strc_atm_remaining_usd: 800_000_000,
-    strc_atm_pct_deployed: 80.95,
+    strc_atm_deployed_usd: ATM_DEPLOYED.STRC,
+    strc_atm_authorized_usd: ATM_AUTHORIZED.STRC,
+    strc_atm_remaining_usd: ATM_REMAINING.STRC,
+    strc_atm_pct_deployed: parseFloat(((ATM_DEPLOYED.STRC / ATM_AUTHORIZED.STRC) * 100).toFixed(2)),
     strc_atm_pace_30d_usd: 420_000_000,
     strc_atm_pace_90d_monthly_usd: 380_000_000,
-    mstr_atm_deployed_usd: 18_000_000_000,
-    mstr_atm_authorized_usd: 21_000_000_000,
-    mstr_atm_remaining_usd: 3_000_000_000,
-    mstr_atm_pct_deployed: 85.71,
+    mstr_atm_deployed_usd: ATM_DEPLOYED.MSTR,
+    mstr_atm_authorized_usd: ATM_AUTHORIZED.MSTR,
+    mstr_atm_remaining_usd: ATM_REMAINING.MSTR,
+    mstr_atm_pct_deployed: parseFloat(((ATM_DEPLOYED.MSTR / ATM_AUTHORIZED.MSTR) * 100).toFixed(2)),
     participation_rate_current: 0.030,
     participation_rate_range: [0.018, 0.045],
     est_days_to_exhaustion: 63,

@@ -2,66 +2,11 @@ import { NextResponse } from "next/server";
 import { fetchFmpHistory } from "@/src/lib/utils/fetchers";
 import { CONFIRMED_PURCHASES } from "@/src/lib/data/confirmed-purchases";
 import { getAdso } from "@/src/lib/data/mstr-adso";
+import { getEvComponents, type EvComponents } from "@/src/lib/data/capital-structure";
 
 export const revalidate = 0;
 
 const FIRST_PURCHASE_DATE = "2020-08-10";
-
-// ── Historical EV components ──────────────────────────────────────────
-// mNAV = Enterprise Value / BTC Reserve
-// EV = Market Cap + Convertible Debt + Preferred Notional - Cash
-//
-// These components changed over time as MSTR issued convertible notes
-// and preferred stock. We model them as a step function by date.
-
-interface EvComponents {
-  convertDebt: number;    // Aggregate principal of convertible notes
-  prefNotional: number;   // Aggregate notional of perpetual preferred stock
-  cash: number;           // Cash & equivalents
-}
-
-// Historical EV component timeline (approximate, from SEC filings)
-// Each entry takes effect on its date and applies until the next entry.
-const EV_TIMELINE: Array<{ date: string } & EvComponents> = [
-  // 2020: First BTC purchase, $500M convert outstanding
-  { date: "2020-08-10", convertDebt: 0,              prefNotional: 0, cash: 50_000_000 },
-  // Dec 2020: $650M convertible notes
-  { date: "2020-12-11", convertDebt: 650_000_000,    prefNotional: 0, cash: 60_000_000 },
-  // Feb 2021: $1.05B additional converts
-  { date: "2021-02-19", convertDebt: 1_700_000_000,  prefNotional: 0, cash: 60_000_000 },
-  // Jun 2021: $500M senior secured notes + converts
-  { date: "2021-06-14", convertDebt: 2_200_000_000,  prefNotional: 0, cash: 70_000_000 },
-  // Mar 2024: $800M additional converts
-  { date: "2024-03-08", convertDebt: 3_000_000_000,  prefNotional: 0, cash: 80_000_000 },
-  // Sep 2024: More converts
-  { date: "2024-09-20", convertDebt: 4_250_000_000,  prefNotional: 0, cash: 100_000_000 },
-  // Nov 2024: Massive convert issuance ($3B+ in Q4 2024)
-  { date: "2024-11-21", convertDebt: 7_250_000_000,  prefNotional: 0, cash: 200_000_000 },
-  // Jan 2025: STRF launched ($711M)
-  { date: "2025-01-24", convertDebt: 7_250_000_000,  prefNotional: 711_000_000, cash: 500_000_000 },
-  // Feb 2025: STRC launched, converts reach ~$8.2B
-  { date: "2025-02-20", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 1_000_000_000, cash: 600_000_000 },
-  // May 2025: STRC ATM ramps, STRK launched
-  { date: "2025-05-01", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 2_500_000_000 + 700_000_000, cash: 800_000_000 },
-  // Jul 2025: STRD launched, STRC at ~$3.4B
-  { date: "2025-07-25", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 3_400_000_000 + 700_000_000 + 1_000_000_000, cash: 1_000_000_000 },
-  // Jan 2026: Continued ATM issuance across all preferred tranches
-  // STRF: ~$711M, STRC: ~$4.5B, STRK: ~$0, STRD: ~$0
-  { date: "2026-01-05", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 4_500_000_000, cash: 1_200_000_000 },
-  // Mar 2026: 8-K shows STRC $1.18B this period, MSTR $396M ATM
-  // Cumulative deployed: STRC notional from 8-K pattern, STRK/STRD not yet issued
-  // STRF: $711M, STRC: ~$5.7B deployed (notional basis), STRK: $0, STRD: $0
-  { date: "2026-03-16", convertDebt: 8_200_000_000,  prefNotional: 711_000_000 + 5_700_000_000, cash: 1_500_000_000 },
-];
-
-function getEvComponents(dateStr: string): EvComponents {
-  let result = EV_TIMELINE[0];
-  for (const entry of EV_TIMELINE) {
-    if (entry.date <= dateStr) result = entry;
-    else break;
-  }
-  return { convertDebt: result.convertDebt, prefNotional: result.prefNotional, cash: result.cash };
-}
 
 /**
  * Get cumulative BTC held as of a given date (step function from confirmed purchases).
@@ -91,7 +36,7 @@ interface MnavDataPoint {
  *   EV = Market Cap + Convertible Debt + Preferred Notional - Cash
  *   BTC Reserve = BTC Holdings × BTC Price
  */
-function computeMnav(
+function computeHistoricalMnav(
   mstrPrice: number,
   adsoThousands: number,
   cumBtc: number,
@@ -143,7 +88,7 @@ async function buildLiveMnav(): Promise<MnavDataPoint[] | null> {
 
     const adsoThousands = getAdso(date);
     const ev = getEvComponents(date);
-    const { mnav, evTotal, btcReserve } = computeMnav(mstrPrice, adsoThousands, cumBtc, btcPrice, ev);
+    const { mnav, evTotal, btcReserve } = computeHistoricalMnav(mstrPrice, adsoThousands, cumBtc, btcPrice, ev);
 
     result.push({
       date,
@@ -161,10 +106,29 @@ async function buildLiveMnav(): Promise<MnavDataPoint[] | null> {
 }
 
 /**
- * Generate synthetic mNAV data when FMP is unavailable.
+ * Generate deterministic mNAV data when FMP is unavailable.
+ * Uses era-based mNAV estimates (no randomness) for data integrity.
  */
 function buildMockMnav(): MnavDataPoint[] {
   const result: MnavDataPoint[] = [];
+
+  function mnavForDate(dateStr: string): number {
+    const year = parseInt(dateStr.slice(0, 4));
+    const month = parseInt(dateStr.slice(5, 7));
+    if (year === 2020) return 1.1;
+    if (year === 2021 && month <= 4) return 2.2;
+    if (year === 2021) return 1.5;
+    if (year === 2022 && month <= 6) return 0.8;
+    if (year === 2022) return 0.6;
+    if (year === 2023 && month <= 6) return 1.05;
+    if (year === 2023) return 1.3;
+    if (year === 2024 && month <= 3) return 1.6;
+    if (year === 2024 && month <= 9) return 1.4;
+    if (year === 2024) return 3.0;
+    if (year === 2025 && month <= 6) return 2.2;
+    if (year === 2025) return 1.8;
+    return 1.6;
+  }
 
   for (const p of CONFIRMED_PURCHASES) {
     const btcPrice = p.avg_cost;
@@ -172,27 +136,8 @@ function buildMockMnav(): MnavDataPoint[] {
     const ev = getEvComponents(p.date);
     const btcReserve = p.cumulative * btcPrice;
 
-    // Approximate MSTR price to produce realistic mNAV
-    // Early: ~1.0-1.5x, 2021 bull: ~2-3x, 2022 bear: ~0.5-0.8x,
-    // 2023 recovery: ~1.0-1.5x, 2024-25 bull: ~1.5-3.0x
-    const year = parseInt(p.date.slice(0, 4));
-    const month = parseInt(p.date.slice(5, 7));
-    let mnavEstimate: number;
-
-    if (year === 2020) mnavEstimate = 1.0 + Math.random() * 0.2;
-    else if (year === 2021 && month <= 4) mnavEstimate = 1.8 + Math.random() * 0.8;
-    else if (year === 2021) mnavEstimate = 1.3 + Math.random() * 0.5;
-    else if (year === 2022 && month <= 6) mnavEstimate = 0.7 + Math.random() * 0.2;
-    else if (year === 2022) mnavEstimate = 0.5 + Math.random() * 0.15;
-    else if (year === 2023 && month <= 6) mnavEstimate = 0.9 + Math.random() * 0.3;
-    else if (year === 2023) mnavEstimate = 1.1 + Math.random() * 0.4;
-    else if (year === 2024 && month <= 3) mnavEstimate = 1.4 + Math.random() * 0.5;
-    else if (year === 2024 && month <= 9) mnavEstimate = 1.2 + Math.random() * 0.4;
-    else if (year === 2024) mnavEstimate = 2.5 + Math.random() * 1.0;
-    else mnavEstimate = 1.5 + Math.random() * 0.8;
-
+    const mnavEstimate = mnavForDate(p.date);
     const evTotal = btcReserve * mnavEstimate;
-    // Back-solve MSTR price: marketCap = evTotal - debt - pref + cash
     const marketCap = evTotal - ev.convertDebt - ev.prefNotional + ev.cash;
     const mstrPrice = marketCap > 0 ? marketCap / (adsoThousands * 1000) : 0;
 

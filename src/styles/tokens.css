@@ -250,6 +250,46 @@ body {
   100% { box-shadow: 0 0 0 0 rgba(0, 168, 107, 0); }
 }
 
+/* ── Sidebar sub-items (section navigation) ── */
+.sidebar-subitems {
+  padding: 2px 0 4px 12px;
+}
+
+.sidebar-subitem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 12px;
+  border: none;
+  background: none;
+  border-left: 2px solid var(--border);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--t3);
+  cursor: pointer;
+  transition: color 0.1s, border-color 0.1s;
+}
+
+.sidebar-subitem:hover {
+  color: var(--t1);
+  border-left-color: var(--accent);
+}
+
+/* ── Section anchors & headers ── */
+.section-anchor {
+  scroll-margin-top: 76px;
+}
+
+.section-header {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 /* Mobile overlay */
 .sidebar-overlay {
   display: none;

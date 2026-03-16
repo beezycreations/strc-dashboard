@@ -7,6 +7,7 @@ import {
   atmIssuance,
   strcRateHistory,
   capitalStructureSnapshots,
+  strcFilings,
 } from "@/src/db/schema";
 import { fetchEdgarSubmissions, sleep } from "@/src/lib/utils/fetchers";
 import { parse8K } from "@/src/lib/parsers/edgar-8k-parser";
@@ -153,6 +154,50 @@ export async function GET(request: NextRequest) {
             } catch (e) {
               errors.push(
                 `atmIssuance insert ${atm.ticker}: ${e instanceof Error ? e.message : String(e)}`,
+              );
+            }
+          }
+        }
+
+        // Write STRC filing record if STRC ATM data was found
+        if (parsed.atmProceeds) {
+          const strcAtm = parsed.atmProceeds.find((a) => a.ticker === "STRC");
+          if (strcAtm) {
+            try {
+              // Determine period dates: from parser, or default to filing date
+              const periodStart = parsed.periodDates?.start ?? filing.filingDate;
+              const periodEnd = parsed.periodDates?.end ?? filing.filingDate;
+
+              // BTC purchased: from btcPurchased extractor, or estimate from proceeds / avg price
+              let btcCount: number | null = null;
+              let avgBtcPrice: number | null = null;
+
+              if (parsed.btcPurchased) {
+                btcCount = parsed.btcPurchased.count;
+                avgBtcPrice = parsed.btcPurchased.avgPrice;
+              } else if (parsed.btcHoldings?.avgCost) {
+                // Rough estimate: STRC proceeds share of total * total BTC purchased
+                avgBtcPrice = parsed.btcHoldings.avgCost;
+                btcCount = Math.round(strcAtm.proceeds / avgBtcPrice);
+              }
+
+              await db
+                .insert(strcFilings)
+                .values({
+                  accessionNo: filing.accessionNo,
+                  filingDate: filing.filingDate,
+                  type: "ATM",
+                  periodStart,
+                  periodEnd,
+                  sharesSold: strcAtm.shares,
+                  netProceeds: String(strcAtm.proceeds),
+                  btcPurchased: btcCount,
+                  avgBtcPrice: avgBtcPrice ? String(avgBtcPrice) : null,
+                })
+                .onConflictDoNothing();
+            } catch (e) {
+              errors.push(
+                `strcFilings insert: ${e instanceof Error ? e.message : String(e)}`,
               );
             }
           }

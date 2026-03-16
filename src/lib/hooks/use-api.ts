@@ -43,3 +43,9 @@ export function useMstrMnav() {
     revalidateOnFocus: false,
   });
 }
+
+export function useStrcFilings() {
+  return useSWR("/api/data/strc-filings", fetcher, {
+    revalidateOnFocus: false,
+  });
+}

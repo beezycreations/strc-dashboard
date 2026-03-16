@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const now = new Date();
-    const results: Array<{ ticker: string; price: number; source: string }> = [];
+    const results: Array<{ ticker: string; price: number; volume?: number; source: string }> = [];
     const errors: string[] = [];
 
     // Always fetch BTC
@@ -51,6 +51,7 @@ export async function GET(request: NextRequest) {
             results.push({
               ticker,
               price: quote.price,
+              volume: quote.volume ?? undefined,
               source: "fmp",
             });
           }
@@ -62,7 +63,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Upsert into price_history
+    // Upsert into price_history (include volume for equity tickers)
     let upserted = 0;
     for (const row of results) {
       try {
@@ -72,6 +73,7 @@ export async function GET(request: NextRequest) {
             ticker: row.ticker,
             ts: now,
             price: String(row.price),
+            volume: row.volume != null ? String(row.volume) : null,
             source: row.source,
             isEod: false,
           })
@@ -79,6 +81,7 @@ export async function GET(request: NextRequest) {
             target: [priceHistory.ticker, priceHistory.ts, priceHistory.source],
             set: {
               price: String(row.price),
+              volume: row.volume != null ? String(row.volume) : undefined,
             },
           });
         upserted++;
@@ -95,20 +98,20 @@ export async function GET(request: NextRequest) {
         const eodTickers = ["STRC", "STRF", "STRK", "STRD", "MSTR", "SPY"];
         for (const ticker of eodTickers) {
           // Find latest row for this ticker today and mark as EOD
+          const eodRow = results.find((r) => r.ticker === ticker);
           await db
             .insert(priceHistory)
             .values({
               ticker,
               ts: now,
-              price: String(
-                results.find((r) => r.ticker === ticker)?.price ?? 0,
-              ),
+              price: String(eodRow?.price ?? 0),
+              volume: eodRow?.volume != null ? String(eodRow.volume) : null,
               source: "fmp",
               isEod: true,
             })
             .onConflictDoUpdate({
               target: [priceHistory.ticker, priceHistory.ts, priceHistory.source],
-              set: { isEod: true },
+              set: { isEod: true, volume: eodRow?.volume != null ? String(eodRow.volume) : undefined },
             });
         }
         // BTC trades 24/7 — mark EOD alongside equities
