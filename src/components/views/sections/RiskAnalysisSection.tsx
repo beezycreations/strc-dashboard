@@ -20,7 +20,7 @@ export default function RiskAnalysisSection({ snap, history }: Props) {
 
       {/* ── Dividend Defense ── */}
       <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12, marginTop: 8 }}>Dividend Defense Waterfall</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "var(--card-gap)", marginBottom: 20 }}>
+      <div className="defense-grid" style={{ marginBottom: 20 }}>
 
         {/* First Defense: ATM Issuance */}
         <div className="card" style={{ padding: 16 }}>
@@ -217,7 +217,7 @@ export default function RiskAnalysisSection({ snap, history }: Props) {
 
       {/* Structural Protections */}
       <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>Structural Protections</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "var(--card-gap)" }}>
+      <div className="defense-grid">
         <div className="card" style={{ padding: 14 }}>
           <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, marginBottom: 6 }}>Dividend Stopper</div>
           <Badge variant={s.dividend_stopper_active ? "red" : "green"}>

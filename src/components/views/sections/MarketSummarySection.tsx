@@ -21,7 +21,7 @@ export default function MarketSummarySection({ snap, history }: Props) {
       <div className="section-header">Market Summary</div>
 
       {/* KPI Strip — 6 cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "var(--card-gap)", marginBottom: 20 }}>
+      <div className="kpi-grid" style={{ marginBottom: 20 }}>
         <KpiCard
           label="STRC Price"
           dotColor="var(--accent)"
@@ -95,7 +95,7 @@ export default function MarketSummarySection({ snap, history }: Props) {
       </div>
 
       {/* STRC Market Metrics row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "var(--card-gap)" }}>
+      <div className="metric-grid">
         <LiveCard label="Notional ($M)" value={s.strc_notional != null ? `$${(s.strc_notional / 1e6).toFixed(1)}` : null} sub="Par value outstanding" ts={ts} />
         <LiveCard label="Market Cap ($M)" value={s.strc_market_cap != null ? `$${(s.strc_market_cap / 1e6).toFixed(1)}` : null} sub="Shares × price" ts={ts} />
         <LiveCard label="50d Avg Price" value={s.strc_1m_vwap != null ? `$${Number(s.strc_1m_vwap).toFixed(2)}` : null} sub="50-day moving average" ts={ts} />

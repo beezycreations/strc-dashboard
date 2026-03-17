@@ -103,7 +103,7 @@ function LongMode({ snap }: { snap: Record<string, number & string & boolean> })
       {/* Position Details */}
       <div className="card" style={{ padding: 14 }}>
         <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, marginBottom: 10 }}>Position Details</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+        <div className="kpi-grid">
           <DetailTile label="Shares (at par $100)" value={sharesAtPar.toLocaleString()} />
           <DetailTile label={`Shares (at $${Number(s.strc_price).toFixed(2)})`} value={sharesAtMarket.toLocaleString()} />
           <DetailTile label="Current Market Value" value={`$${currentValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`} />

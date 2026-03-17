@@ -23,7 +23,7 @@ export default function FundamentalsSection({ snap }: Props) {
       </div>
 
       {/* Flywheel metrics row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "var(--card-gap)", marginBottom: 20 }}>
+      <div className="metric-grid" style={{ marginBottom: 20 }}>
         <div className="card" style={{ padding: 14 }}>
           <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)" }}>BTC Yield YTD</div>
           <div className="mono" style={{ fontSize: "var(--text-xl)", fontWeight: 600, color: "var(--green)" }}>{s.btc_yield_ytd != null ? fmtPct(s.btc_yield_ytd * 100, 1) : "—"}</div>

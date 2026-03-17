@@ -422,6 +422,10 @@ body {
   .shell-content {
     padding: 16px 12px;
   }
+
+  .section-header {
+    font-size: var(--text-md);
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -486,5 +490,53 @@ body {
     display: block;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ═══════════════════════════════════════════
+   KPI & Metric Grids (responsive)
+   ═══════════════════════════════════════════ */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--card-gap);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--card-gap);
+}
+
+.defense-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--card-gap);
+}
+
+@media (max-width: 860px) {
+  .kpi-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .defense-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
   }
 }

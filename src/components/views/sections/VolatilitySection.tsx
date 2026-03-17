@@ -29,7 +29,7 @@ export default function VolatilitySection({ vol }: Props) {
       )}
 
       {/* STRC Key Metrics */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "var(--card-gap)", marginBottom: 20 }}>
+      <div className="kpi-grid" style={{ marginBottom: 20 }}>
         <MetricCard label="Sharpe Ratio" value={strcMetrics.sharpe_ratio != null ? strcMetrics.sharpe_ratio.toFixed(2) : null} color="var(--accent)" ts={lastUpdated} />
         <MetricCard label="BTC Correlation" value={strcMetrics.corr_btc != null ? fmtPct(strcMetrics.corr_btc * 100, 0) : null} color="var(--btc)" ts={lastUpdated} />
         <MetricCard label="SPY Correlation" value={strcMetrics.corr_spy != null ? fmtPct(strcMetrics.corr_spy * 100, 0) : null} color="var(--t2)" ts={lastUpdated} />
