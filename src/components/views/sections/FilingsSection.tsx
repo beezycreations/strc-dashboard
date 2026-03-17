@@ -84,16 +84,16 @@ export default function FilingsSection() {
                   {f.type === "IPO" ? "--" : fmtPeriod(f.period_start, f.period_end)}
                 </td>
                 <td style={{ ...tdStyle, textAlign: "right" }} className="mono">
-                  {f.shares_sold.toLocaleString()}
+                  {(f.shares_sold ?? 0).toLocaleString()}
                 </td>
                 <td style={{ ...tdStyle, textAlign: "right", color: "var(--green)" }} className="mono">
-                  {fmtProceeds(f.net_proceeds)}
+                  {fmtProceeds(f.net_proceeds ?? 0)}
                 </td>
                 <td style={{ ...tdStyle, textAlign: "right", color: "var(--btc)" }} className="mono">
-                  ~{f.btc_purchased.toLocaleString()}
+                  {f.btc_purchased != null ? `~${f.btc_purchased.toLocaleString()}` : "—"}
                 </td>
                 <td style={{ ...tdStyle, textAlign: "right" }} className="mono">
-                  {fmtBtcPrice(f.avg_btc_price)}
+                  {f.avg_btc_price != null ? fmtBtcPrice(f.avg_btc_price) : "—"}
                 </td>
                 <td style={{ ...tdStyle, textAlign: "center" }}>
                   {f.sec_url ? (
@@ -118,13 +118,13 @@ export default function FilingsSection() {
             <tr style={{ borderTop: "2px solid var(--amber)" }}>
               <td style={{ ...tdStyle, fontWeight: 600, color: "var(--amber)" }} colSpan={3}>Total</td>
               <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }} className="mono">
-                {totals.shares.toLocaleString()}
+                {(totals.shares ?? 0).toLocaleString()}
               </td>
               <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: "var(--green)" }} className="mono">
-                {fmtProceeds(totals.proceeds)}
+                {fmtProceeds(totals.proceeds ?? 0)}
               </td>
               <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: "var(--btc)" }} className="mono">
-                {totals.btc.toLocaleString()} ₿
+                {(totals.btc ?? 0).toLocaleString()} ₿
               </td>
               <td style={tdStyle} colSpan={2} />
             </tr>

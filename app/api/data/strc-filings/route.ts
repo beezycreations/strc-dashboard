@@ -42,8 +42,8 @@ export async function GET() {
       .from(strcFilings)
       .orderBy(desc(strcFilings.filingDate));
 
-    if (rows.length === 0) {
-      // DB table empty — fall back to confirmed SEC filing data
+    if (rows.length === 0 || rows.length < CONFIRMED_STRC_ATM.length) {
+      // DB table empty or incomplete — use confirmed SEC filing data
       return NextResponse.json(buildStaticResponse());
     }
 
