@@ -32,8 +32,7 @@ export default function VolatilitySection({ vol }: Props) {
       <div className="kpi-grid" style={{ marginBottom: 20 }}>
         <MetricCard label="Sharpe Ratio" value={strcMetrics.sharpe_ratio != null ? strcMetrics.sharpe_ratio.toFixed(2) : null} color="var(--accent)" ts={lastUpdated} />
         <MetricCard label="BTC Correlation" value={strcMetrics.corr_btc != null ? fmtPct(strcMetrics.corr_btc * 100, 0) : null} color="var(--btc)" ts={lastUpdated} />
-        <MetricCard label="SPY Correlation" value={strcMetrics.corr_spy != null ? fmtPct(strcMetrics.corr_spy * 100, 0) : null} color="var(--t2)" ts={lastUpdated} />
-        <MetricCard label="Hist Volatility 30D" value={strcInst?.vol_30d != null ? fmtPct(strcInst.vol_30d) : null} color="var(--violet)" ts={lastUpdated} />
+<MetricCard label="Hist Volatility 30D" value={strcInst?.vol_30d != null ? fmtPct(strcInst.vol_30d) : null} color="var(--violet)" ts={lastUpdated} />
         <MetricCard label={strcMetrics.vol_1y_is_calendar ? "Hist Volatility (1Y)" : strcMetrics.vol_1y_days != null ? `Hist Volatility (${strcMetrics.vol_1y_days}d)` : "Hist Volatility (1Y)"} value={strcMetrics.vol_1y != null ? fmtPct(strcMetrics.vol_1y) : null} color="var(--amber)" ts={lastUpdated} />
       </div>
 
@@ -48,10 +47,9 @@ export default function VolatilitySection({ vol }: Props) {
             </tr>
           </thead>
           <tbody>
-            {instruments.map((inst: { ticker: string; vol_30d: number | null; vol_90d: number | null; vol_ratio: number | null; beta_btc_30d: number | null; beta_mstr_30d: number | null; signal: string | null }) => {
-              const isSpy = inst.ticker === "SPY";
+            {instruments.filter((inst: { ticker: string }) => inst.ticker !== "SPY").map((inst: { ticker: string; vol_30d: number | null; vol_90d: number | null; vol_ratio: number | null; beta_btc_30d: number | null; beta_mstr_30d: number | null; signal: string | null }) => {
               return (
-                <tr key={inst.ticker} style={{ borderBottom: "1px solid var(--border)", opacity: isSpy ? 0.6 : 1 }}>
+                <tr key={inst.ticker} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td style={{ padding: "8px 10px", fontWeight: 600 }}>{inst.ticker}</td>
                   <td className="mono" style={{ padding: "8px 10px" }}>{inst.vol_30d != null ? fmtPct(inst.vol_30d) : "—"}</td>
                   <td className="mono" style={{ padding: "8px 10px" }}>{inst.vol_90d != null ? fmtPct(inst.vol_90d) : "—"}</td>
