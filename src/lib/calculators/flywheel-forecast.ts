@@ -3,7 +3,8 @@
  *
  * Estimates real-time BTC holdings and share issuance between 8-K releases.
  * STRC is the primary issuance instrument — preferred proceeds go 100% to BTC.
- * MSTR common issuance is secondary, driven by mNAV thresholds.
+ * MSTR common issuance targets 1.25× the cumulative dividend liability from STRC
+ * (dividend coverage + 25% surplus for BTC), subject to the mNAV governor.
  *
  * Resolves the circular dependency day-by-day:
  *   mNAV → MSTR issuance decision → proceeds → BTC purchased →
@@ -12,68 +13,48 @@
 
 import {
   CONFIRMED_ATM_PERIODS,
-  type ConfirmedAtmPeriod,
 } from "@/src/lib/data/confirmed-atm-all";
 import {
-  CONVERT_DEBT_USD,
   CURRENT_PREF_NOTIONAL,
-  CASH_BALANCE,
   ANNUAL_OBLIGATIONS,
-  DAILY_OBLIGATIONS,
   ATM_AUTHORIZED,
   ATM_REMAINING,
+  computeMnav as computeMnavShared,
 } from "@/src/lib/data/capital-structure";
+import {
+  calibrateParticipationRate,
+  type ParticipationCalibration,
+} from "@/src/lib/calculators/issuance-engine";
 
 // ── Default participation rates ──────────────────────────────────────
-// What fraction of daily volume is ATM issuance (new shares being sold).
-//
-// IMPORTANT: The preferred estimation path uses 8-K-derived daily pace
-// directly (via issuance-engine.ts), NOT volume × participation rate.
-// These rates are only used when the flywheel runs with per-day market
-// data and real volume (e.g., future DB-backed daily forecasts).
-//
-// The STRC rate of 25% reflects MSTR management guidance on ATM
-// participation as a fraction of daily trading volume. This should be
-// updated if management commentary changes forward guidance.
-// When volume data is mock/unavailable, the issuance engine's pace-based
-// approach (derived directly from 8-K filings) is always preferred.
+// What fraction of daily STRC volume is ATM issuance (new shares being sold).
+// The STRC rate of 25% reflects MSTR management guidance.
+// MSTR issuance is NOT volume-based — it's demand-driven by dividend liability.
 const DEFAULT_PARTICIPATION_RATES: Record<string, number> = {
   STRC: 0.25,  // ~25% of STRC volume — per MSTR management guidance
-  MSTR: 0.02,  // 2% of MSTR volume — much lower for common equity
-  STRK: 0.0,   // Zero recent issuance
-  STRD: 0.0,   // Zero recent issuance
-  STRF: 0.0,   // Zero recent issuance
 };
 
-// ── mNAV thresholds for MSTR common issuance ────────────────────────
-// From Q3/Q4 2025 earnings: how aggressively to issue common stock
-const MNAV_THRESHOLD_TACTICAL = 2.5; // < 2.5× → dividends only
-const MNAV_THRESHOLD_OPPORTUNISTIC = 4.0; // 2.5-4× → moderate issuance
-// > 4× → aggressive issuance
+// ── MSTR common issuance model ────────────────────────────────────────
+// MSTR issues enough common equity to:
+//   1. Cover the growing dividend liability from STRC issuance (cumulative)
+//   2. Plus 25% extra for additional BTC purchases
+// Subject to mNAV governor: if mNAV too low, issuance is reduced/halted.
+const MSTR_BTC_SURPLUS_RATE = 0.25; // 25% extra above dividend coverage → BTC
+const MSTR_MNAV_THRESHOLD = 1.0;   // MSTR issues shares anytime mNAV > 1.0× (above NAV)
 
-/**
- * Compute mNAV per Strategy methodology:
- *   mNAV = EV / BTC Reserve
- *   EV = MSTR Market Cap + Converts + Preferred Notional - Cash
- */
+/** Wrapper around shared computeMnav that accepts the flywheel's calling convention */
 function computeMnav(params: {
   mstrMarketCap: number;
   btcHoldings: number;
   btcPrice: number;
   totalPrefNotional?: number;
 }): number {
-  const {
-    mstrMarketCap,
-    btcHoldings,
-    btcPrice,
-    totalPrefNotional = CURRENT_PREF_NOTIONAL,
-  } = params;
-
-  const ev =
-    mstrMarketCap + CONVERT_DEBT_USD + totalPrefNotional - CASH_BALANCE;
-  const btcReserve = btcHoldings * btcPrice;
-  if (btcReserve <= 0 || mstrMarketCap <= 0) return 0;
-  return ev / btcReserve;
+  return computeMnavShared({
+    mstrMarketCap: params.mstrMarketCap,
+    btcHoldings: params.btcHoldings,
+    btcPrice: params.btcPrice,
+    prefNotionalOverride: params.totalPrefNotional,
+  });
 }
 
 // ── Interfaces ───────────────────────────────────────────────────────
@@ -105,8 +86,12 @@ export interface DayForecast {
   date: string;
   /** Estimated STRC ATM proceeds for this day */
   strcProceeds: number;
+  /** Estimated STRC shares issued this day */
+  strcSharesIssued: number;
   /** Estimated MSTR common proceeds for this day */
   mstrProceeds: number;
+  /** Estimated MSTR shares issued this day */
+  mstrSharesIssued: number;
   /** MSTR proceeds allocated to dividends */
   mstrDividendAlloc: number;
   /** Total proceeds allocated to BTC purchases */
@@ -121,6 +106,10 @@ export interface DayForecast {
   strcAtmDeployed: number;
   /** Running preferred notional */
   totalPrefNotional: number;
+  /** Running annual dividend liability */
+  annualDividendLiability: number;
+  /** Data source: confirmed (8-K reconciled) or estimated (volume × rate) */
+  source: "confirmed" | "estimated";
 }
 
 export interface FlywheelForecastResult {
@@ -136,6 +125,10 @@ export interface FlywheelForecastResult {
   estimatedMnav: number;
   /** Confidence: lower if more days since last 8-K */
   confidence: number;
+  /** Participation rate used for STRC estimation */
+  participationRate: number;
+  /** Source of the participation rate */
+  participationSource: "calibrated" | "management_guidance" | "pace_fallback";
 }
 
 // ── Core forecast engine ─────────────────────────────────────────────
@@ -158,24 +151,12 @@ export function getBaseline(): FlywheelBaseline {
 }
 
 /**
- * Determine MSTR participation rate based on current mNAV.
- * Saylor's framework: below 2.5× tactical (dividends only), 2.5-4× opportunistic, >4× aggressive.
+ * mNAV governor for MSTR common equity issuance.
+ * MSTR issues shares anytime mNAV > 1.0× (trading above NAV).
+ * Below 1.0×: halt — issuing equity below NAV is dilutive.
  */
-function mstrParticipationForMnav(mnav: number): number {
-  if (mnav < MNAV_THRESHOLD_TACTICAL) {
-    // Below 2.5×: issue only enough to cover dividends, no incremental BTC buying via common
-    return 0;
-  }
-  if (mnav < MNAV_THRESHOLD_OPPORTUNISTIC) {
-    // 2.5-4×: opportunistic — moderate participation
-    // Linear interpolation from 1% at 2.5× to 3% at 4×
-    const t =
-      (mnav - MNAV_THRESHOLD_TACTICAL) /
-      (MNAV_THRESHOLD_OPPORTUNISTIC - MNAV_THRESHOLD_TACTICAL);
-    return 0.01 + t * 0.02;
-  }
-  // >4×: aggressive — higher participation, capped at 5%
-  return Math.min(0.05, 0.03 + (mnav - 4.0) * 0.005);
+function mnavGovernor(mnav: number): number {
+  return mnav > MSTR_MNAV_THRESHOLD ? 1.0 : 0.0;
 }
 
 /**
@@ -185,22 +166,41 @@ function mstrParticipationForMnav(mnav: number): number {
  *   covering each trading day since the last 8-K period end.
  * @param participationRates - Optional overrides for participation rates.
  *   Defaults to DEFAULT_PARTICIPATION_RATES.
+ * @param options.confirmedDays - Set of dates that are confirmed (from 8-K reconciliation).
+ *   Days in this set will be tagged source: "confirmed".
+ * @param options.participationCalibration - Pre-computed calibration result for metadata.
  */
 export function runForecast(
   marketData: DayMarketData[],
   participationRates?: Partial<Record<string, number>>,
+  options?: {
+    confirmedDays?: Set<string>;
+    participationCalibration?: ParticipationCalibration;
+  },
 ): FlywheelForecastResult {
   const baseline = getBaseline();
   const rates = { ...DEFAULT_PARTICIPATION_RATES, ...participationRates };
+  const confirmedDays = options?.confirmedDays ?? new Set<string>();
+  const calibration = options?.participationCalibration;
 
   let btcHoldings = baseline.btcHoldings;
   let strcAtmDeployed = baseline.strcAtmDeployed;
   let totalPrefNotional = baseline.totalPrefNotional;
   let currentMnav = 0;
+  // Track only INCREMENTAL dividend liability from NEW STRC issuance during forecast.
+  // Base obligations ($888M) are funded by existing cash reserves — not MSTR's problem here.
+  // This grows cumulatively as STRC shares are issued each day.
+  let cumulativeIncrementalDividend = 0;
+  // Track cumulative MSTR proceeds raised so far to handle catch-up
+  let cumulativeMstrRaised = 0;
+  // Keep annualDividendLiability for reporting (base + incremental)
+  let annualDividendLiability = ANNUAL_OBLIGATIONS;
 
   const days: DayForecast[] = [];
 
   for (const day of marketData) {
+    const isConfirmed = confirmedDays.has(day.date);
+
     // ── Step 1: Estimate STRC ATM proceeds ──
     // STRC is the primary driver — participation rate × volume × price
     const strcParticipation = rates.STRC ?? DEFAULT_PARTICIPATION_RATES.STRC;
@@ -215,7 +215,20 @@ export function runForecast(
     strcAtmDeployed += strcNotionalIncrease;
     totalPrefNotional += strcNotionalIncrease;
 
-    // ── Step 2: Compute mNAV to determine MSTR issuance ──
+    // ── Step 2: MSTR common issuance — covers INCREMENTAL dividend liability ──
+    //
+    // Each day's new STRC issuance creates an annual dividend obligation:
+    //   annual_dividend = new_notional × 11.25%
+    //
+    // MSTR raises 1.25× that amount (dividend + 25% surplus for BTC).
+    // ALL MSTR issuance is subject to the mNAV governor — dividend coverage
+    // is cumulative but MSTR can delay when mNAV is unfavorable.
+    // Tracked cumulatively so MSTR catches up when conditions improve.
+    const todaysDividendIncrement = strcNotionalIncrease * 0.1125;
+    cumulativeIncrementalDividend += todaysDividendIncrement;
+    annualDividendLiability += todaysDividendIncrement;
+
+    // Compute mNAV for governor
     const mstrMarketCap = day.mstrSharesOutstanding * day.mstrPrice;
     currentMnav = computeMnav({
       mstrMarketCap,
@@ -224,14 +237,25 @@ export function runForecast(
       totalPrefNotional,
     });
 
-    // ── Step 3: MSTR common issuance based on mNAV ──
-    const mstrParticipation = mstrParticipationForMnav(currentMnav);
-    const mstrSharesSold = Math.round(day.mstrVolume * mstrParticipation);
+    // mNAV governor: MSTR issues anytime mNAV > 1.0×.
+    // MSTR raises 1.25× the cumulative dividend liability:
+    //   - 1.0× covers dividends
+    //   - 0.25× surplus goes ENTIRELY to BTC purchases
+    // The 25% surplus IS the BTC component — that's the whole point of the flywheel.
+    const governor = mnavGovernor(currentMnav);
+    const cumulativeMstrTarget =
+      cumulativeIncrementalDividend * (1 + MSTR_BTC_SURPLUS_RATE) * governor;
+    const mstrProceedsNeeded = Math.max(0, cumulativeMstrTarget - cumulativeMstrRaised);
+    const mstrSharesSold = day.mstrPrice > 0
+      ? Math.round(mstrProceedsNeeded / day.mstrPrice)
+      : 0;
     const mstrProceeds = mstrSharesSold * day.mstrPrice;
+    cumulativeMstrRaised += mstrProceeds;
 
-    // MSTR proceeds: fund dividends first, remainder to BTC
-    const mstrDividendAlloc = Math.min(mstrProceeds, DAILY_OBLIGATIONS);
-    const mstrBtcAlloc = Math.max(0, mstrProceeds - mstrDividendAlloc);
+    // Allocate: dividend coverage is 1.0× of incremental liability,
+    // the 25% surplus goes entirely to BTC purchases.
+    const mstrDividendAlloc = Math.min(mstrProceeds, todaysDividendIncrement);
+    const mstrBtcAlloc = todaysDividendIncrement * MSTR_BTC_SURPLUS_RATE * governor;
     btcPurchaseProceeds += mstrBtcAlloc;
 
     // ── Step 4: BTC purchases ──
@@ -250,7 +274,9 @@ export function runForecast(
     days.push({
       date: day.date,
       strcProceeds,
+      strcSharesIssued: strcSharesSold,
       mstrProceeds,
+      mstrSharesIssued: mstrSharesSold,
       mstrDividendAlloc,
       btcPurchaseProceeds,
       btcPurchased,
@@ -258,6 +284,8 @@ export function runForecast(
       mnav: parseFloat(currentMnav.toFixed(4)),
       strcAtmDeployed,
       totalPrefNotional,
+      annualDividendLiability,
+      source: isConfirmed ? "confirmed" : "estimated",
     });
   }
 
@@ -275,13 +303,20 @@ export function runForecast(
       ? parseFloat(currentMnav.toFixed(4))
       : 0,
     confidence,
+    participationRate: rates.STRC ?? DEFAULT_PARTICIPATION_RATES.STRC,
+    participationSource: calibration?.source ?? "management_guidance",
   };
 }
 
 /**
- * Quick single-day forecast using current live market data.
- * This is for the snapshot route — runs the flywheel for just today
- * (or however many days since last 8-K if we have historical volume).
+ * Forecast using live and/or historical market data.
+ *
+ * When historicalDays is provided, the flywheel runs from the day after the
+ * last 8-K through each historical day, then appends today's live data.
+ * This fills the gap between the last confirmed 8-K and now.
+ *
+ * @param params.historicalDays - Optional array of historical daily market data
+ *   from DB (covers days between last 8-K and today). If omitted, single-day forecast.
  */
 export function forecastFromLiveData(params: {
   btcPrice: number;
@@ -292,6 +327,12 @@ export function forecastFromLiveData(params: {
   mstrSharesOutstanding: number;
   /** Override participation rates from DB calibration */
   participationRates?: Partial<Record<string, number>>;
+  /** Historical daily data to backfill (sorted oldest-first) */
+  historicalDays?: DayMarketData[];
+  /** Participation calibration metadata */
+  participationCalibration?: ParticipationCalibration;
+  /** Dates that are from confirmed 8-K reconciliation */
+  confirmedDays?: Set<string>;
 }): FlywheelForecastResult {
   const today = new Date().toISOString().slice(0, 10);
   const baseline = getBaseline();
@@ -311,13 +352,20 @@ export function forecastFromLiveData(params: {
         totalPrefNotional: baseline.totalPrefNotional,
       }),
       confidence: 1.0,
+      participationRate: params.participationRates?.STRC ?? DEFAULT_PARTICIPATION_RATES.STRC,
+      participationSource: params.participationCalibration?.source ?? "management_guidance",
     };
   }
 
-  // For now, single-day forecast with live data
-  // TODO: When historical volume is in DB, backfill intermediate days
+  // Build market data: historical days + today's live data
   const marketData: DayMarketData[] = [
-    {
+    ...(params.historicalDays ?? []),
+  ];
+
+  // Add today if not already in historical data
+  const lastHistDate = marketData[marketData.length - 1]?.date;
+  if (!lastHistDate || lastHistDate < today) {
+    marketData.push({
       date: today,
       btcPrice: params.btcPrice,
       strcPrice: params.strcPrice,
@@ -325,80 +373,17 @@ export function forecastFromLiveData(params: {
       mstrPrice: params.mstrPrice,
       mstrVolume: params.mstrVolume,
       mstrSharesOutstanding: params.mstrSharesOutstanding,
-    },
-  ];
-
-  return runForecast(marketData, params.participationRates);
-}
-
-// ── Backtest / Calibration ───────────────────────────────────────────
-
-/**
- * Calibrate STRC participation rate against confirmed 8-K data.
- * Grid-searches the rate that best matches confirmed proceeds.
- *
- * @param periods - Confirmed ATM periods with actual proceeds
- * @param historicalVolume - Map of date → daily STRC volume
- * @param historicalPrice - Map of date → daily STRC price
- * @returns Best-fit participation rate
- */
-export function calibrateStrcParticipation(
-  periods: ConfirmedAtmPeriod[],
-  historicalVolume: Map<string, number>,
-  historicalPrice: Map<string, number>,
-): { rate: number; error: number; sampleCount: number } {
-  let bestRate = DEFAULT_PARTICIPATION_RATES.STRC;
-  let bestError = Infinity;
-  let sampleCount = 0;
-
-  // Grid search from 5% to 60% in 1% steps
-  for (let rate = 0.05; rate <= 0.6; rate += 0.01) {
-    let totalError = 0;
-    let samples = 0;
-
-    for (const period of periods) {
-      const strc = period.instruments.find((i) => i.ticker === "STRC");
-      if (!strc || strc.net_proceeds === 0) continue;
-
-      // Sum estimated proceeds across the period
-      let estimatedProceeds = 0;
-      const start = new Date(period.period_start);
-      const end = new Date(period.period_end);
-
-      for (
-        let d = new Date(start);
-        d <= end;
-        d.setDate(d.getDate() + 1)
-      ) {
-        const dateStr = d.toISOString().slice(0, 10);
-        const vol = historicalVolume.get(dateStr);
-        const price = historicalPrice.get(dateStr);
-        if (vol != null && price != null) {
-          estimatedProceeds += vol * rate * price;
-        }
-      }
-
-      if (estimatedProceeds > 0) {
-        // Relative error
-        const err = Math.abs(estimatedProceeds - strc.net_proceeds) / strc.net_proceeds;
-        totalError += err;
-        samples++;
-      }
-    }
-
-    if (samples > 0) {
-      const avgError = totalError / samples;
-      if (avgError < bestError) {
-        bestError = avgError;
-        bestRate = parseFloat(rate.toFixed(2));
-        sampleCount = samples;
-      }
-    }
+    });
   }
 
-  return { rate: bestRate, error: bestError, sampleCount };
+  return runForecast(marketData, params.participationRates, {
+    confirmedDays: params.confirmedDays,
+    participationCalibration: params.participationCalibration,
+  });
 }
 
-// ── Exports for snapshot integration ─────────────────────────────────
+// ── Re-exports ──────────────────────────────────────────────────────
 
-// All capital structure constants are exported from src/lib/data/capital-structure.ts
+// Participation rate calibration is consolidated in issuance-engine.ts
+export { calibrateParticipationRate } from "@/src/lib/calculators/issuance-engine";
+export type { ParticipationCalibration } from "@/src/lib/calculators/issuance-engine";

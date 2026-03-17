@@ -25,6 +25,8 @@ export interface ConfirmedStrcAtm {
   btc_purchased: number;
   /** Average BTC price during the period */
   avg_btc_price: number;
+  /** SEC EDGAR accession number (e.g. "0001193125-26-107263") */
+  accession_no?: string;
 }
 
 export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
@@ -38,6 +40,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 2_520_000_000,
     btc_purchased: 21_379,
     avg_btc_price: 118_000,
+    accession_no: "0001193125-25-167987",
   },
   // ATM issuances (chronological)
   {
@@ -49,6 +52,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 26_200_000,
     btc_purchased: 251,
     avg_btc_price: 104_000,
+    accession_no: "0001193125-25-273310",
   },
   {
     filed: "2025-11-17",
@@ -59,6 +63,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 131_200_000,
     btc_purchased: 1_303,
     avg_btc_price: 101_000,
+    accession_no: "0001193125-25-283991",
   },
   {
     filed: "2026-01-12",
@@ -69,6 +74,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 119_100_000,
     btc_purchased: 1_298,
     avg_btc_price: 92_000,
+    accession_no: "0001193125-26-009811",
   },
   {
     filed: "2026-01-20",
@@ -79,6 +85,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 294_300_000,
     btc_purchased: 3_089,
     avg_btc_price: 95_000,
+    accession_no: "0001193125-26-016002",
   },
   {
     filed: "2026-01-26",
@@ -89,6 +96,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 7_000_000,
     btc_purchased: 78,
     avg_btc_price: 90_000,
+    accession_no: "0001193125-26-021726",
   },
   {
     filed: "2026-02-17",
@@ -99,6 +107,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 78_400_000,
     btc_purchased: 1_158,
     avg_btc_price: 68_000,
+    accession_no: "0001193125-26-053105",
   },
   {
     filed: "2026-03-02",
@@ -109,6 +118,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 7_100_000,
     btc_purchased: 105,
     avg_btc_price: 68_000,
+    accession_no: "0001193125-26-084264",
   },
   {
     filed: "2026-03-09",
@@ -119,6 +129,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 377_100_000,
     btc_purchased: 5_315,
     avg_btc_price: 71_000,
+    accession_no: "0001193125-26-097598",
   },
   {
     filed: "2026-03-16",
@@ -129,6 +140,7 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     net_proceeds: 1_180_400_000,
     btc_purchased: 16_794,
     avg_btc_price: 70_290,
+    accession_no: "0001193125-26-107263",
   },
 ];
 

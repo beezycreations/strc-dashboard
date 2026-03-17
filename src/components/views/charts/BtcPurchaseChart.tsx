@@ -1,15 +1,8 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { useSnapshot } from "@/src/lib/hooks/use-api";
+import { useSnapshot, useVolumeAtm } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
-import {
-  forecastBtcHoldings,
-  getWeightedDailyPace,
-  getEngineSummary,
-  backtestPaceModel,
-  getDailyEstimates,
-} from "@/src/lib/calculators/issuance-engine";
 import {
   ComposedChart,
   Bar,
@@ -25,24 +18,45 @@ import { colors, rechartsDefaults } from "@/src/lib/chart-config";
 import {
   CONFIRMED_PURCHASES,
   LATEST_CONFIRMED_BTC,
-  LATEST_CONFIRMED_DATE,
 } from "@/src/lib/data/confirmed-purchases";
 
+// STRC IPO date — flywheel takes over as the single source from this date
+const STRC_IPO_DATE = "2025-07-29";
+
+// BTC holdings just before IPO (last pre-IPO confirmed purchase)
+const PRE_IPO_PURCHASES = CONFIRMED_PURCHASES.filter((p) => p.date < STRC_IPO_DATE);
+const PRE_IPO_CUMULATIVE = PRE_IPO_PURCHASES.length > 0
+  ? PRE_IPO_PURCHASES[PRE_IPO_PURCHASES.length - 1].cumulative
+  : 0;
+
+interface FlywheelDay {
+  date: string;
+  btc_purchased: number;
+  strc_issuance_confirmed: number;
+  strc_issuance_estimated: number;
+  mstr_issuance_estimated: number;
+  source: "confirmed" | "estimated";
+}
+
+interface ChartPoint {
+  date: string;
+  btc_confirmed: number;
+  btc_estimated: number;
+  btc_cumulative: number;
+  cost_m: number;
+  avg_cost: number;
+}
+
 export default function BtcPurchaseChart() {
-  const { data: snap, isLoading } = useSnapshot();
+  const { data: snap, isLoading: snapLoading } = useSnapshot();
+  const { data: volumeAtm, isLoading: volumeLoading } = useVolumeAtm();
   const [range, setRange] = useState<"3m" | "6m" | "1y" | "all">("3m");
   const [showMethodology, setShowMethodology] = useState(false);
 
   const btcPrice = snap?.btc_price ?? 83000;
-
-  // 8-K-derived engine data (no mock dependency)
-  const holdings = useMemo(() => forecastBtcHoldings(btcPrice), [btcPrice]);
-  const engineSummary = useMemo(() => getEngineSummary(), []);
-  const pace = useMemo(() => getWeightedDailyPace(), []);
-  const paceBacktest = useMemo(() => backtestPaceModel(), []);
+  const flywheelDays: FlywheelDay[] = volumeAtm?.flywheel_days ?? [];
 
   const chartData = useMemo(() => {
-    // Determine date range
     const now = new Date();
     const cutoff =
       range === "3m"
@@ -54,88 +68,89 @@ export default function BtcPurchaseChart() {
             : new Date("2020-08-01");
     const cutoffStr = cutoff.toISOString().slice(0, 10);
 
-    // Filter confirmed purchases within range
-    const purchasesInRange = CONFIRMED_PURCHASES.filter((p) => p.date >= cutoffStr);
+    const result: ChartPoint[] = [];
 
-    // Find the starting cumulative BTC (just before our range)
-    const purchasesBefore = CONFIRMED_PURCHASES.filter((p) => p.date < cutoffStr);
-    const startingCumulative = purchasesBefore.length > 0
-      ? purchasesBefore[purchasesBefore.length - 1].cumulative
-      : 0;
-
-    // Build confirmed data points
-    const result: Array<{
-      date: string;
-      btc_confirmed: number;
-      btc_estimated: number;
-      btc_cumulative: number;
-      cost_m: number;
-      avg_cost: number;
-      source: "confirmed" | "estimated";
-    }> = [];
-
-    for (const p of purchasesInRange) {
-      result.push({
-        date: p.date,
-        btc_confirmed: p.btc,
-        btc_estimated: 0,
-        btc_cumulative: p.cumulative,
-        cost_m: p.cost_m,
-        avg_cost: p.avg_cost,
-        source: "confirmed",
-      });
+    // ── Phase 1: Pre-IPO purchases from CONFIRMED_PURCHASES ──
+    // Only needed for "All" or "1Y" ranges that extend before the IPO
+    if (cutoffStr < STRC_IPO_DATE) {
+      const preIpo = CONFIRMED_PURCHASES.filter(
+        (p) => p.date >= cutoffStr && p.date < STRC_IPO_DATE,
+      );
+      for (const p of preIpo) {
+        result.push({
+          date: p.date,
+          btc_confirmed: p.btc,
+          btc_estimated: 0,
+          btc_cumulative: p.cumulative,
+          cost_m: p.cost_m,
+          avg_cost: p.avg_cost,
+        });
+      }
     }
 
-    // After the last confirmed purchase, add daily estimates from issuance engine
-    const todayStr = now.toISOString().slice(0, 10);
-    if (LATEST_CONFIRMED_DATE < todayStr) {
-      const estimates = getDailyEstimates(LATEST_CONFIRMED_DATE, todayStr, btcPrice);
-      const postConfirmed = estimates.filter((e) => e.date > LATEST_CONFIRMED_DATE);
+    // ── Phase 2: Post-IPO — EVERYTHING from flywheel_days ──
+    // This is the SAME data source as Volume & ATM Tracker.
+    // Confirmed days = volume-weighted 8-K allocations (daily granularity)
+    // Estimated days = flywheel estimates (STRC + MSTR → BTC)
+    const postIpoDays = flywheelDays.filter(
+      (d) => d.date >= cutoffStr && d.btc_purchased > 0,
+    );
 
-      let runningBtc = LATEST_CONFIRMED_BTC;
+    // Build cumulative starting from pre-IPO holdings
+    let cumBtc = PRE_IPO_CUMULATIVE;
 
-      for (const est of postConfirmed) {
-        if (est.date < cutoffStr) continue;
-        if (est.btc_estimate > 0) {
-          runningBtc += est.btc_estimate;
-          result.push({
-            date: est.date,
-            btc_confirmed: 0,
-            btc_estimated: est.btc_estimate,
-            btc_cumulative: runningBtc,
-            cost_m: est.total_proceeds / 1e6,
-            avg_cost: btcPrice,
-            source: "estimated",
-          });
-        }
-      }
+    // If range starts after IPO, we need the cumulative up to cutoff
+    // Sum all flywheel days before the cutoff
+    if (cutoffStr >= STRC_IPO_DATE) {
+      const preCutoff = flywheelDays.filter(
+        (d) => d.date < cutoffStr && d.btc_purchased > 0,
+      );
+      cumBtc += preCutoff.reduce((s, d) => s + d.btc_purchased, 0);
+    }
+
+    for (const day of postIpoDays) {
+      cumBtc += day.btc_purchased;
+      const proceedsM =
+        day.strc_issuance_confirmed +
+        day.strc_issuance_estimated +
+        day.mstr_issuance_estimated;
+
+      result.push({
+        date: day.date,
+        btc_confirmed: day.source === "confirmed" ? day.btc_purchased : 0,
+        btc_estimated: day.source === "estimated" ? day.btc_purchased : 0,
+        btc_cumulative: cumBtc,
+        cost_m: proceedsM,
+        avg_cost: day.btc_purchased > 0 ? (proceedsM * 1e6) / day.btc_purchased : btcPrice,
+      });
     }
 
     // Sort by date
     result.sort((a, b) => a.date.localeCompare(b.date));
 
-    // Ensure cumulative line is monotonically correct
-    if (result.length > 0 && result[0].btc_cumulative === 0) {
-      result[0].btc_cumulative = startingCumulative + result[0].btc_confirmed;
-    }
-
     return result;
-  }, [range, btcPrice]);
+  }, [range, btcPrice, flywheelDays]);
 
   const tickInterval = Math.max(1, Math.floor(chartData.length / 12));
 
-  // Summary stats for the visible range
+  // Summary stats
   const totalBtcInRange = chartData.reduce((s, d) => s + d.btc_confirmed + d.btc_estimated, 0);
   const totalCostInRange = chartData.reduce((s, d) => s + d.cost_m, 0);
-  const confirmedCount = chartData.filter((d) => d.source === "confirmed").length;
-  const estimatedCount = chartData.filter((d) => d.source === "estimated").length;
-  const latestCumulative = chartData.length > 0 ? chartData[chartData.length - 1].btc_cumulative : LATEST_CONFIRMED_BTC;
+  const confirmedCount = chartData.filter((d) => d.btc_confirmed > 0).length;
+  const estimatedCount = chartData.filter((d) => d.btc_estimated > 0).length;
+  const latestCumulative = chartData.length > 0
+    ? chartData[chartData.length - 1].btc_cumulative
+    : LATEST_CONFIRMED_BTC;
 
-  // Overall totals from full history
+  // Overall totals
   const totalCostAll = CONFIRMED_PURCHASES.reduce((s, p) => s + p.cost_m, 0);
   const avgCostBasis = totalCostAll > 0 ? (totalCostAll * 1e6) / LATEST_CONFIRMED_BTC : 0;
 
-  if (isLoading) {
+  // Flywheel KPIs
+  const participationRate = volumeAtm?.kpi?.participation_rate_current ?? 0;
+  const participationSource = volumeAtm?.kpi?.participation_rate_source ?? "unknown";
+
+  if (snapLoading || volumeLoading) {
     return <div className="card"><div className="skeleton" style={{ height: 480 }} /></div>;
   }
 
@@ -146,7 +161,7 @@ export default function BtcPurchaseChart() {
         <div>
           <div style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Strategy Bitcoin Purchases</div>
           <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", marginTop: 2 }}>
-            Source: strategy.com/purchases
+            Source: 8-K filings + flywheel engine (same as Volume &amp; ATM Tracker)
           </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
@@ -216,14 +231,12 @@ export default function BtcPurchaseChart() {
               }}
               interval={tickInterval}
             />
-            {/* Left Y-axis: BTC per purchase event */}
             <YAxis
               yAxisId="daily"
               tick={{ fontSize: 9, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
               tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : `${v}`}
               width={40}
             />
-            {/* Right Y-axis: Cumulative BTC */}
             <YAxis
               yAxisId="cumulative"
               orientation="right"
@@ -241,8 +254,8 @@ export default function BtcPurchaseChart() {
                 const v = Number(value);
                 if (v === 0) return null;
                 switch (String(name)) {
-                  case "btc_confirmed": return [`${v.toLocaleString()} BTC`, "Purchased (8-K)"];
-                  case "btc_estimated": return [`${v.toFixed(0)} BTC`, "Purchased (Est.)"];
+                  case "btc_confirmed": return [`${v.toLocaleString(undefined, { maximumFractionDigits: 0 })} BTC`, "Purchased (8-K)"];
+                  case "btc_estimated": return [`${v.toFixed(0)} BTC`, "Est. (Flywheel)"];
                   case "btc_cumulative": return [`${v.toLocaleString(undefined, { maximumFractionDigits: 0 })} BTC`, "Total Holdings"];
                   default: return [`${v}`, String(name)];
                 }
@@ -255,42 +268,26 @@ export default function BtcPurchaseChart() {
               formatter={(value: string) => {
                 switch (value) {
                   case "btc_confirmed": return "8-K Confirmed";
-                  case "btc_estimated": return "Estimated";
+                  case "btc_estimated": return "Flywheel Est.";
                   case "btc_cumulative": return "Total Holdings";
                   default: return value;
                 }
               }}
             />
-            {/* Confirmed BTC bars (green) */}
-            <Bar
-              yAxisId="daily"
-              dataKey="btc_confirmed"
-              fill={colors.green}
-              opacity={0.85}
-              radius={[2, 2, 0, 0]}
-              stackId="btc"
-            />
-            {/* Estimated BTC bars (amber) */}
-            <Bar
-              yAxisId="daily"
-              dataKey="btc_estimated"
-              fill={colors.amber}
-              opacity={0.7}
-              radius={[2, 2, 0, 0]}
-              stackId="btc"
-            />
-            {/* Cumulative BTC line */}
-            <Line
-              yAxisId="cumulative"
-              type="stepAfter"
-              dataKey="btc_cumulative"
-              stroke={colors.btc}
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 4, stroke: colors.btc, fill: "#fff" }}
-            />
+            <Bar yAxisId="daily" dataKey="btc_confirmed" fill={colors.green} opacity={0.85} radius={[2, 2, 0, 0]} stackId="btc" />
+            <Bar yAxisId="daily" dataKey="btc_estimated" fill={colors.amber} opacity={0.7} radius={[2, 2, 0, 0]} stackId="btc" />
+            <Line yAxisId="cumulative" type="stepAfter" dataKey="btc_cumulative" stroke={colors.btc} strokeWidth={2} dot={false} activeDot={{ r: 4, stroke: colors.btc, fill: "#fff" }} />
           </ComposedChart>
         </ResponsiveContainer>
+      </div>
+
+      {/* Footnote */}
+      <div style={{ fontSize: 10, color: "var(--t3)", lineHeight: 1.5, marginBottom: 16 }}>
+        * Confirmed daily BTC purchases (green) are allocated from 8-K period totals using a volume-weighted
+        average — each trading day receives a share of the period&apos;s total BTC proportional to its STRC trading
+        volume relative to the period total. Estimated purchases (amber) are derived from the flywheel engine
+        using actual daily STRC volume × participation rate for STRC proceeds, plus MSTR common equity issuance
+        targeting 1.25× the cumulative dividend liability, subject to the mNAV governor.
       </div>
 
       {/* Purchase Events Table */}
@@ -299,7 +296,7 @@ export default function BtcPurchaseChart() {
           <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)" }}>
             Recent Purchase Events
           </span>
-          <Badge variant="neutral">{CONFIRMED_PURCHASES.length} total</Badge>
+          <Badge variant="neutral">{CONFIRMED_PURCHASES.length} confirmed</Badge>
         </div>
         <div style={{ maxHeight: 200, overflowY: "auto", overflowX: "auto" }}>
           {[...CONFIRMED_PURCHASES].reverse().slice(0, 15).map((p, i) => (
@@ -323,77 +320,42 @@ export default function BtcPurchaseChart() {
         </div>
       </div>
 
-      {/* Methodology section */}
+      {/* Methodology */}
       <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
         <button
           onClick={() => setShowMethodology(!showMethodology)}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: 0,
-            fontSize: "var(--text-xs)",
-            color: "var(--t3)",
-            fontWeight: 500,
-          }}
+          style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, padding: 0, fontSize: "var(--text-xs)", color: "var(--t3)", fontWeight: 500 }}
         >
-          <span style={{ transform: showMethodology ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s ease", display: "inline-block" }}>
-            ▶
-          </span>
+          <span style={{ transform: showMethodology ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s ease", display: "inline-block" }}>▶</span>
           BTC Purchase Estimation Methodology
         </button>
         {showMethodology && (
           <div style={{ marginTop: 10, fontSize: "var(--text-xs)", color: "var(--t3)", lineHeight: 1.6 }}>
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Data source</strong>: Confirmed purchases (<Badge variant="green">8-K</Badge>) are sourced
-              directly from Strategy&apos;s SEC 8-K filings and the official purchase history
-              at <span className="mono">strategy.com/purchases</span>. Each filing reports exact BTC acquired, total cost,
-              and weighted-average purchase price for a specific reporting period.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>The 8-K Estimation Chain</strong>: BTC purchase estimates are derived from the unified
-              issuance engine, which computes all parameters directly from confirmed 8-K filings:
+              <strong style={{ color: "var(--t2)" }}>Unified data source</strong>: This chart and the Volume &amp; ATM Tracker
+              use the exact same flywheel engine. STRC issuance estimates in the ATM tracker directly
+              determine the BTC purchase estimates shown here. When a new 8-K is filed, both charts
+              update simultaneously — estimated bars become confirmed bars.
             </p>
             <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
-              <div>1. 8-K confirmed data → exponentially-weighted daily pace</div>
-              <div>   Weighted daily proceeds: ${(pace.total_daily / 1e6).toFixed(1)}M (STRC: {(pace.strc_share * 100).toFixed(0)}% + MSTR: {((1 - pace.strc_share) * 100).toFixed(0)}%)</div>
-              <div>2. Daily proceeds × {(pace.conversion_rate * 100).toFixed(0)}% conversion → BTC/day at current price</div>
-              <div>   Est. BTC/day: {(pace.total_daily * pace.conversion_rate / btcPrice).toFixed(1)} BTC @ ${btcPrice.toLocaleString()}</div>
-              <div>3. Confirmed {holdings.confirmed_btc.toLocaleString()} BTC + {holdings.estimated_btc_since.toLocaleString()} est. ({holdings.forecast_days} trading days)</div>
-              <div>   = {holdings.total_estimated_btc.toLocaleString()} total estimated holdings</div>
-              <div>   Confidence: {holdings.confidence}% ({holdings.confidence_label})</div>
-              <div>4. Feeds → mNAV, BTC coverage, impairment calculations</div>
+              <div>1. STRC volume × {(participationRate * 100).toFixed(1)}% participation → est. shares issued</div>
+              <div>2. STRC proceeds = shares × price → 100% to BTC (per management)</div>
+              <div>3. New STRC shares → grows cumulative dividend liability (11.25% × notional)</div>
+              <div>4. MSTR targets 1.25× cumulative dividend liability (25% surplus → BTC)</div>
+              <div>5. mNAV governor: issue if mNAV &gt; 1.0×, halt if below NAV</div>
+              <div>6. Total BTC = (STRC proceeds + MSTR surplus) / BTC price</div>
+              <div>   Rate source: {participationSource === "calibrated" ? "Volume backtested from 8-K filings" : "Management guidance (25%)"}</div>
             </div>
-
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Why 8-K-derived, not volume-based</strong>: The issuance engine derives daily pace
-              directly from confirmed 8-K filings, avoiding any dependency on trading volume data (which may be unavailable or mock).
-              The conversion rate ({(pace.conversion_rate * 100).toFixed(0)}%) is observed from 8-K data, not assumed.
-              Management has guided ~25% ATM participation relative to daily trading volume; when real DB volume data is available,
-              this rate is used as an alternative estimation path.
+              <strong style={{ color: "var(--t2)" }}>Confirmed days</strong> (<Badge variant="green">8-K</Badge>): The 8-K period total
+              is allocated proportionally to daily STRC trading volume. Higher-volume days get more of the
+              confirmed BTC.
             </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Cross-validation</strong>: Leave-one-out backtest across {paceBacktest.periods} 8-K periods
-              yields {paceBacktest.mape.toFixed(1)}% MAPE with {paceBacktest.bias > 0 ? "+" : ""}{paceBacktest.bias.toFixed(1)}% bias.
-              The model recalibrates automatically when new 8-K data is added to the confirmed data files.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>8-K reconciliation</strong>: When a new 8-K filing is published, all prior
-              estimates are replaced by confirmed figures, the cumulative total resets, and confidence returns
-              to 100%. Strategy typically files 8-Ks weekly, so estimates are usually outstanding for 5–10 trading days.
-            </p>
-
-            <p style={{ margin: 0, marginTop: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The pace model assumes relatively stable issuance, but actual
-              daily proceeds vary dramatically ($1.4M–$236M/day across confirmed periods). The conversion
-              rate may vary as Strategy retains proceeds for operating expenses or debt service. All estimates are
-              provisional and will be replaced by confirmed figures as 8-K filings are processed.
+            <p style={{ margin: 0 }}>
+              <strong style={{ color: "var(--t2)" }}>Estimated days</strong> (<Badge variant="amber">Est.</Badge>): For days not yet
+              covered by an 8-K, the flywheel applies the calibrated participation rate to actual daily volume.
+              Strategy files 8-Ks weekly — estimates are typically outstanding for 5–10 trading days before
+              being replaced by actuals.
             </p>
           </div>
         )}

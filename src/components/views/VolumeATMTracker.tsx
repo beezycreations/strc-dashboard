@@ -4,12 +4,6 @@ import { useState, useMemo } from "react";
 import { useVolumeAtm, useSnapshot } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
 import {
-  getDailyEstimates,
-  getWeightedDailyPace,
-  getEngineSummary,
-  backtestPaceModel,
-} from "@/src/lib/calculators/issuance-engine";
-import {
   ComposedChart,
   Line,
   Bar,
@@ -29,12 +23,31 @@ interface VolumeDay {
   mstr_volume: number;
 }
 
+interface FlywheelDay {
+  date: string;
+  strc_issuance_confirmed: number;
+  strc_issuance_estimated: number;
+  mstr_issuance_estimated: number;
+  strc_shares_issued: number;
+  mstr_shares_issued: number;
+  btc_purchased: number;
+  cumulative_btc: number;
+  mnav: number;
+  source: "confirmed" | "estimated";
+}
+
 interface AtmEvent {
   date: string;
+  period_start?: string;
+  period_end?: string;
+  type?: string;
   proceeds_usd: number;
   shares_issued: number;
   avg_price: number;
+  btc_purchased?: number;
+  avg_btc_price?: number;
   is_estimated: boolean;
+  cumulative_proceeds?: number;
 }
 
 export default function VolumeATMTracker() {
@@ -44,12 +57,7 @@ export default function VolumeATMTracker() {
   const [showMethodology, setShowMethodology] = useState(false);
 
   const kpi = data?.kpi ?? {};
-  const btcPrice = snap?.btc_price ?? 70000;
-
-  // 8-K-derived engine data (static, from confirmed filings — no mock dependency)
-  const engineSummary = useMemo(() => getEngineSummary(), []);
-  const pace = useMemo(() => getWeightedDailyPace(), []);
-  const paceBacktest = useMemo(() => backtestPaceModel(), []);
+  const flywheelDays: FlywheelDay[] = data?.flywheel_days ?? [];
 
   // Filter volume history by range
   const filteredVolume: VolumeDay[] = useMemo(() => {
@@ -65,36 +73,26 @@ export default function VolumeATMTracker() {
     return (data.volume_history as VolumeDay[]).filter((v) => v.date >= cutoffStr);
   }, [data?.volume_history, range]);
 
-  // Merge volume data (from API) with issuance estimates (from 8-K engine)
-  // Volume lines come from the API; ATM bars come from the issuance engine.
-  // This eliminates the dependency on mock-data-poisoned participation rates.
+  // Merge volume data with flywheel data for the chart
   const chartData = useMemo(() => {
     if (filteredVolume.length === 0) return [];
 
-    const startDate = filteredVolume[0].date;
-    const endDate = filteredVolume[filteredVolume.length - 1].date;
-
-    // Get daily issuance estimates from the unified 8-K engine
-    const estimates = getDailyEstimates(startDate, endDate, btcPrice);
-    const estimateMap = new Map(estimates.map((e) => [e.date, e]));
+    // Build flywheel lookup
+    const flywheelMap = new Map(flywheelDays.map((d) => [d.date, d]));
 
     return filteredVolume.map((v) => {
-      const est = estimateMap.get(v.date);
-      const totalProceeds = est?.total_proceeds ?? 0;
-      const isConfirmed = est?.source === "confirmed";
-
+      const fw = flywheelMap.get(v.date);
       return {
         date: v.date,
         strc_volume: v.strc_volume,
-        mstr_volume: v.mstr_volume,
-        strc_price: v.strc_price,
-        atm_proceeds_confirmed: isConfirmed ? totalProceeds / 1e6 : 0,
-        atm_proceeds_estimated: !isConfirmed && totalProceeds > 0 ? totalProceeds / 1e6 : 0,
-        atm_btc: est?.btc_estimate ?? 0,
-        atm_source: est?.source ?? null,
+        strc_issuance_confirmed: fw?.strc_issuance_confirmed ?? 0,
+        strc_issuance_estimated: fw?.strc_issuance_estimated ?? 0,
+        mstr_issuance_estimated: fw?.mstr_issuance_estimated ?? 0,
+        btc_purchased: fw?.btc_purchased ?? 0,
+        source: fw?.source ?? null,
       };
     });
-  }, [filteredVolume, btcPrice]);
+  }, [filteredVolume, flywheelDays]);
 
   // Tick interval for X-axis
   const tickInterval = Math.max(1, Math.floor(chartData.length / 10));
@@ -102,6 +100,10 @@ export default function VolumeATMTracker() {
   if (isLoading || !data) {
     return <div className="card"><div className="skeleton" style={{ height: 420 }} /></div>;
   }
+
+  const participationPct = ((kpi.participation_rate_current ?? 0) * 100).toFixed(1);
+  const participationSource = kpi.participation_rate_source ?? "unknown";
+  const totalBtcEst = chartData.reduce((s, d) => s + d.btc_purchased, 0);
 
   return (
     <div className="card">
@@ -135,9 +137,9 @@ export default function VolumeATMTracker() {
         <KpiMini label="Today Volume" value={fmtK(kpi.strc_volume_today ?? 0)} />
         <KpiMini label="20d Avg" value={fmtK(kpi.strc_volume_avg_20d ?? 0)} />
         <KpiMini
-          label="Vol / Avg"
-          value={`${(kpi.strc_volume_ratio ?? 1).toFixed(2)}×`}
-          badge={(kpi.strc_volume_ratio ?? 1) >= 3 ? "red" : (kpi.strc_volume_ratio ?? 1) >= 2 ? "amber" : undefined}
+          label="Participation Rate"
+          value={`${participationPct}%`}
+          badge={participationSource === "calibrated" ? undefined : "amber"}
         />
         <KpiMini label="ATM Deployed" value={`$${((kpi.strc_atm_deployed_usd ?? 0) / 1e9).toFixed(2)}B`} />
         <KpiMini
@@ -145,10 +147,10 @@ export default function VolumeATMTracker() {
           value={`$${((kpi.strc_atm_remaining_usd ?? 0) / 1e9).toFixed(2)}B`}
           badge={(kpi.strc_atm_remaining_usd ?? 0) < 200_000_000 ? "red" : (kpi.strc_atm_remaining_usd ?? 0) < 500_000_000 ? "amber" : undefined}
         />
-        <KpiMini label="Est. BTC Bought" value={`${chartData.reduce((s, d) => s + d.atm_btc, 0).toFixed(1)} BTC`} />
+        <KpiMini label="Est. BTC Bought" value={`${totalBtcEst.toFixed(1)} BTC`} />
       </div>
 
-      {/* Recharts ComposedChart */}
+      {/* Recharts ComposedChart — Stacked Bars + Volume Line */}
       <div style={{ height: 300, marginBottom: 16 }}>
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={chartData} margin={{ top: 5, right: 10, bottom: 5, left: 5 }}>
@@ -169,7 +171,7 @@ export default function VolumeATMTracker() {
               tickFormatter={(v: number) => fmtK(v)}
               width={40}
             />
-            {/* Right Y-axis: ATM Proceeds ($M) */}
+            {/* Right Y-axis: ATM Issuance ($M) */}
             <YAxis
               yAxisId="atm"
               orientation="right"
@@ -188,8 +190,8 @@ export default function VolumeATMTracker() {
                 if (v === 0) return null;
                 switch (String(name)) {
                   case "strc_volume": return [fmtK(v) + " shares", "STRC Volume"];
-                  case "atm_proceeds_confirmed": return [`$${v.toFixed(1)}M`, "ATM Issuance (8-K)"];
-                  case "atm_proceeds_estimated": return [`$${v.toFixed(1)}M`, "ATM Issuance (Est.)"];
+                  case "strc_issuance_confirmed": return [`$${v.toFixed(1)}M`, "STRC Issuance (8-K)"];
+                  case "strc_issuance_estimated": return [`$${v.toFixed(1)}M`, "STRC Issuance (Est.)"];
                   default: return [`${v}`, String(name)];
                 }
               }}
@@ -201,8 +203,8 @@ export default function VolumeATMTracker() {
               formatter={(value: string) => {
                 switch (value) {
                   case "strc_volume": return "STRC Volume";
-                  case "atm_proceeds_confirmed": return "ATM (8-K Confirmed)";
-                  case "atm_proceeds_estimated": return "ATM (Estimated)";
+                  case "strc_issuance_confirmed": return "STRC (8-K)";
+                  case "strc_issuance_estimated": return "STRC (Est.)";
                   default: return value;
                 }
               }}
@@ -217,29 +219,39 @@ export default function VolumeATMTracker() {
               dot={false}
               activeDot={{ r: 4, stroke: colors.accent, fill: "#fff" }}
             />
-            {/* ATM issuance bars — confirmed (green) */}
+            {/* Stacked issuance bars — STRC confirmed (green) */}
             <Bar
               yAxisId="atm"
-              dataKey="atm_proceeds_confirmed"
+              stackId="issuance"
+              dataKey="strc_issuance_confirmed"
               fill={colors.green}
               opacity={0.85}
               barSize={6}
-              radius={[2, 2, 0, 0]}
+              radius={[0, 0, 0, 0]}
             />
-            {/* ATM issuance bars — estimated (amber) */}
+            {/* Stacked issuance bars — STRC estimated (amber) */}
             <Bar
               yAxisId="atm"
-              dataKey="atm_proceeds_estimated"
+              stackId="issuance"
+              dataKey="strc_issuance_estimated"
               fill={colors.amber}
               opacity={0.7}
               barSize={6}
-              radius={[2, 2, 0, 0]}
+              radius={[0, 0, 0, 0]}
             />
+            {/* MSTR issuance stored in DB but not charted here — displayed in Strategy BTC Purchases */}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Event Log + Issuance Engine Summary */}
+      {/* Footnote */}
+      <div style={{ fontSize: 10, color: "var(--t3)", lineHeight: 1.5, marginBottom: 16 }}>
+        * Confirmed daily issuance (green) is allocated from 8-K period totals using a volume-weighted average —
+        each trading day receives a share proportional to its STRC volume relative to the period total.
+        Estimated daily issuance (amber) uses the flywheel participation rate applied to actual daily STRC trading volume.
+      </div>
+
+      {/* Event Log + Flywheel Summary */}
       <div className="grid-2col">
         {/* ATM Event Log */}
         <div>
@@ -247,53 +259,90 @@ export default function VolumeATMTracker() {
             <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)" }}>ATM Events</span>
             <Badge variant="neutral">{(data.atm_events ?? []).length}</Badge>
           </div>
-          <div style={{ maxHeight: 180, overflowY: "auto", overflowX: "auto" }}>
-            {([...(data.atm_events ?? [])] as AtmEvent[]).sort((a, b) => b.date.localeCompare(a.date)).map((evt: AtmEvent, i: number) => (
-              <div key={i} style={{ display: "flex", gap: 6, padding: "5px 0", borderBottom: "1px solid var(--border)", fontSize: "var(--text-xs)", alignItems: "center", minWidth: "fit-content" }}>
-                <span style={{ color: "var(--t3)", whiteSpace: "nowrap" }}>{evt.date}</span>
-                <span className="mono" style={{ color: "var(--btc-d)", fontWeight: 600, whiteSpace: "nowrap" }}>${(evt.proceeds_usd / 1e6).toFixed(0)}M</span>
-                <span className="mono" style={{ color: "var(--t2)", whiteSpace: "nowrap" }}>{(evt.shares_issued / 1e6).toFixed(1)}M sh</span>
-                <span className="mono" style={{ color: "var(--t3)", whiteSpace: "nowrap" }}>@${evt.avg_price.toFixed(2)}</span>
-                {evt.is_estimated ? (
-                  <Badge variant="amber">Est.</Badge>
-                ) : (
-                  <Badge variant="green">8-K</Badge>
-                )}
-              </div>
-            ))}
+          <div style={{ maxHeight: 260, overflowY: "auto", overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "var(--text-xs)" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                  <th style={{ textAlign: "left", padding: "4px 4px", color: "var(--t3)", fontWeight: 500 }}>Period</th>
+                  <th style={{ textAlign: "right", padding: "4px 4px", color: "var(--t3)", fontWeight: 500 }}>Proceeds</th>
+                  <th style={{ textAlign: "right", padding: "4px 4px", color: "var(--t3)", fontWeight: 500 }}>Shares</th>
+                  <th style={{ textAlign: "right", padding: "4px 4px", color: "var(--t3)", fontWeight: 500 }}>BTC</th>
+                  <th style={{ textAlign: "right", padding: "4px 4px", color: "var(--t3)", fontWeight: 500 }}>Cum.</th>
+                  <th style={{ textAlign: "center", padding: "4px 4px", color: "var(--t3)", fontWeight: 500 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {((data.atm_events ?? []) as AtmEvent[]).map((evt: AtmEvent, i: number) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)", background: evt.is_estimated ? "var(--bg-raised, #FAFAF8)" : undefined }}>
+                    <td style={{ padding: "4px 4px", whiteSpace: "nowrap" }}>
+                      <span style={{ color: "var(--t2)" }}>
+                        {evt.period_start && evt.period_end
+                          ? `${evt.period_start.slice(5)} – ${evt.period_end.slice(5)}`
+                          : evt.date.slice(5)}
+                      </span>
+                    </td>
+                    <td className="mono" style={{ textAlign: "right", padding: "4px 4px", fontWeight: 600, color: "var(--t1)", whiteSpace: "nowrap" }}>
+                      ${evt.proceeds_usd >= 1e9 ? `${(evt.proceeds_usd / 1e9).toFixed(2)}B` : `${(evt.proceeds_usd / 1e6).toFixed(0)}M`}
+                    </td>
+                    <td className="mono" style={{ textAlign: "right", padding: "4px 4px", color: "var(--t2)", whiteSpace: "nowrap" }}>
+                      {(evt.shares_issued / 1e6).toFixed(1)}M
+                    </td>
+                    <td className="mono" style={{ textAlign: "right", padding: "4px 4px", color: colors.btc, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {evt.btc_purchased != null && evt.btc_purchased > 0
+                        ? `${evt.btc_purchased.toLocaleString()}`
+                        : "—"}
+                    </td>
+                    <td className="mono" style={{ textAlign: "right", padding: "4px 4px", color: "var(--t3)", whiteSpace: "nowrap" }}>
+                      {evt.cumulative_proceeds != null
+                        ? `$${(evt.cumulative_proceeds / 1e9).toFixed(2)}B`
+                        : "—"}
+                    </td>
+                    <td style={{ textAlign: "center", padding: "4px 4px" }}>
+                      {evt.is_estimated ? (
+                        <Badge variant="amber">Est.</Badge>
+                      ) : evt.type === "IPO" ? (
+                        <Badge variant="blue">IPO</Badge>
+                      ) : (
+                        <Badge variant="green">8-K</Badge>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             {(data.atm_events ?? []).length === 0 && (
               <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", padding: "8px 0" }}>No ATM events recorded</div>
             )}
           </div>
         </div>
 
-        {/* 8-K Issuance Engine Summary */}
+        {/* Flywheel Engine Summary */}
         <div>
-          <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)", marginBottom: 8 }}>8-K Issuance Engine</div>
+          <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--t2)", marginBottom: 8 }}>Flywheel Engine</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <MiniStat
-              label="Weighted Daily Pace"
-              value={`$${(pace.total_daily / 1e6).toFixed(1)}M/day`}
+              label="Participation Rate"
+              value={`${participationPct}%`}
             />
             <MiniStat
-              label="STRC Share of Proceeds"
-              value={`${(pace.strc_share * 100).toFixed(0)}%`}
+              label="Rate Source"
+              value={participationSource === "calibrated" ? "Volume Backtest" : "Mgmt Guidance"}
             />
             <MiniStat
-              label="Conversion Rate (8-K)"
-              value={`${(pace.conversion_rate * 100).toFixed(0)}%`}
+              label="Flywheel mNAV"
+              value={kpi.flywheel_estimated_mnav ? `${Number(kpi.flywheel_estimated_mnav).toFixed(2)}x` : "N/A"}
             />
             <MiniStat
-              label="8-K Periods Used"
-              value={`${engineSummary.periods}`}
+              label="Est. BTC Holdings"
+              value={kpi.flywheel_estimated_btc ? `${Math.round(Number(kpi.flywheel_estimated_btc)).toLocaleString()}` : "N/A"}
             />
             <MiniStat
               label="Confirmed vs Estimated"
-              value={`${chartData.filter(d => d.atm_source === "confirmed").length} / ${chartData.filter(d => d.atm_source === "estimated").length}`}
+              value={`${chartData.filter(d => d.source === "confirmed").length} / ${chartData.filter(d => d.source === "estimated").length}`}
             />
             <MiniStat
-              label="Backtest MAPE"
-              value={`${paceBacktest.mape.toFixed(1)}%`}
+              label="Est. Pref Notional"
+              value={kpi.flywheel_estimated_pref_notional ? `$${(Number(kpi.flywheel_estimated_pref_notional) / 1e9).toFixed(2)}B` : "N/A"}
             />
           </div>
         </div>
@@ -319,84 +368,55 @@ export default function VolumeATMTracker() {
           <span style={{ transform: showMethodology ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s ease", display: "inline-block" }}>
             ▶
           </span>
-          ATM Estimation &amp; BTC Flywheel Methodology
+          Volume × Participation Rate Methodology
         </button>
         {showMethodology && (
           <div style={{ marginTop: 10, fontSize: "var(--text-xs)", color: "var(--t3)", lineHeight: 1.6 }}>
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>The BTC Flywheel</strong>: Strategy (formerly MicroStrategy) uses ATM equity
-              offerings to raise capital, which is then deployed to purchase Bitcoin. This creates a self-reinforcing cycle: equity
-              issuance → BTC purchases → increased BTC reserves → higher mNAV → further issuance capacity. The preferred stock
-              tranches (STRC, STRF, STRK, STRD) fund the same treasury alongside MSTR common ATM issuance.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>8-K-Derived Methodology</strong>: All estimation parameters are derived directly from
-              confirmed SEC 8-K filings — no assumed participation rates or mock data calibration. The issuance engine analyzes {engineSummary.periods} confirmed
-              8-K periods covering {engineSummary.total_trading_days} trading days and ${(engineSummary.total_proceeds / 1e9).toFixed(1)}B in total proceeds.
+              <strong style={{ color: "var(--t2)" }}>The BTC Flywheel</strong>: Strategy uses ATM equity
+              offerings to raise capital, deployed to purchase Bitcoin. This creates a self-reinforcing cycle: STRC ATM
+              issuance → BTC purchases → increased BTC reserves → higher mNAV → MSTR common issuance → more BTC + dividend coverage.
+              New STRC shares also increase dividend liability, driving further MSTR common issuance.
             </p>
 
             <div style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, border: "1px solid var(--border)" }}>
-              <div style={{ fontWeight: 600, color: "var(--t2)", marginBottom: 6 }}>8-K Confirmed Parameters</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "4px 12px", fontSize: "var(--text-xs)" }}>
-                <span>Weighted Daily Pace: <strong className="mono">${(pace.total_daily / 1e6).toFixed(1)}M</strong></span>
-                <span>STRC Daily Pace: <strong className="mono">${(pace.strc_daily / 1e6).toFixed(1)}M</strong></span>
-                <span>MSTR Daily Pace: <strong className="mono">${(pace.mstr_daily / 1e6).toFixed(1)}M</strong></span>
-                <span>Conversion Rate: <strong className="mono">{(pace.conversion_rate * 100).toFixed(0)}%</strong></span>
-                <span>STRC Share: <strong className="mono">{(pace.strc_share * 100).toFixed(0)}%</strong></span>
-                <span>Backtest MAPE: <strong className="mono">{paceBacktest.mape.toFixed(1)}%</strong></span>
-              </div>
-              <div style={{ marginTop: 6, fontSize: "var(--text-xs)", color: "var(--t3)" }}>
-                All parameters derived from {engineSummary.periods} confirmed 8-K filings via exponentially-weighted pace model (decay = 0.65).
-                Most recent periods carry more weight. Recalibrates automatically when new 8-K data is added.
+              <div style={{ fontWeight: 600, color: "var(--t2)", marginBottom: 6 }}>Volume × Participation Rate Model</div>
+              <div className="mono" style={{ fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
+                <div>est_daily_strc_shares = daily_strc_volume × participation_rate</div>
+                <div>participation_rate = {participationPct}% ({participationSource === "calibrated" ? "backtested from 8-K vs volume" : "management guidance"})</div>
+                <div>strc_proceeds = est_shares × strc_price → 100% to BTC</div>
+                <div>mstr_target = cumulative_div_liability × 1.25 × mNAV_governor</div>
+                <div>mNAV_governor: issue if mNAV &gt; 1.0×, halt if below NAV</div>
+                <div>mstr_proceeds → dividends first, 25% surplus → BTC</div>
               </div>
             </div>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Confirmed events</strong> (<Badge variant="green">8-K</Badge>): Sourced directly from SEC EDGAR 8-K filings.
-              These report exact proceeds, shares issued, and weighted-average price. Strategy typically files 8-Ks within 2–5 business days of issuance.
-              For confirmed periods, the period total is allocated evenly across trading days.
+              <strong style={{ color: "var(--t2)" }}>Confirmed events</strong> (<Badge variant="green">8-K</Badge>): From SEC EDGAR 8-K filings.
+              Confirmed totals are allocated proportionally to daily STRC trading volume (volume-weighted), not evenly spread.
+              Higher-volume days get a larger share of the confirmed issuance.
             </p>
 
             <p style={{ marginBottom: 10 }}>
               <strong style={{ color: "var(--t2)" }}>Estimated events</strong> (<Badge variant="amber">Est.</Badge>): For days after the last confirmed
-              8-K period, the engine projects forward using the exponentially-weighted daily pace derived from confirmed data. Recent 8-K periods
-              carry exponentially more weight (decay factor 0.65), so the forecast adapts as Strategy&apos;s issuance intensity changes.
+              8-K, the engine applies the backtested participation rate to actual daily STRC volume. The rate is recency-weighted
+              across confirmed 8-K periods (decay factor 0.65), adapting as Strategy&apos;s issuance intensity changes.
             </p>
 
             <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Estimation formula</strong>:
-            </p>
-            <div className="mono" style={{ background: "var(--bg-raised)", padding: "10px 14px", borderRadius: "var(--r-sm)", marginBottom: 10, fontSize: "var(--text-xs)", lineHeight: 1.8 }}>
-              <div>weighted_daily_pace = Σ(period_daily_proceeds × decay^rank × trading_days) / Σ(weights)</div>
-              <div>est_daily_proceeds = ${(pace.total_daily / 1e6).toFixed(1)}M (STRC: ${(pace.strc_daily / 1e6).toFixed(1)}M + MSTR: ${(pace.mstr_daily / 1e6).toFixed(1)}M)</div>
-              <div>est_btc_per_day = est_daily_proceeds × {(pace.conversion_rate * 100).toFixed(0)}% / btc_price</div>
-            </div>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Management guidance</strong>: Strategy management has guided ~25% participation rate
-              for ATM issuance relative to daily trading volume. This rate is used in the flywheel forecast engine when real
-              volume data is available from the database. The 8-K pace-based approach shown here is independent of volume data
-              and serves as the primary estimation methodology between confirmed filings.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Cross-validation</strong>: Leave-one-out backtest across {paceBacktest.periods} 8-K periods
-              shows {paceBacktest.mape.toFixed(1)}% MAPE with {paceBacktest.bias > 0 ? "+" : ""}{paceBacktest.bias.toFixed(1)}% directional bias.
-              High variability in issuance pace across periods
-              makes precision challenging, but the recency-weighted model tracks Strategy&apos;s evolving pace.
-            </p>
-
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>8-K reconciliation</strong>: When a confirmed 8-K filing is received, it overrides all
-              prior daily estimates within its coverage period. Confirmed totals are allocated evenly across trading days in the period.
-              This ensures the chart always ties back to actuals once official data is available.
+              <strong style={{ color: "var(--t2)" }}>MSTR common issuance</strong>:
+              Demand-driven by the cumulative dividend liability created by STRC issuance. MSTR targets 1.25× the
+              incremental annual dividend obligation (11.25% × new STRC notional) — 1.0× for dividend coverage,
+              0.25× surplus for additional BTC purchases. All MSTR issuance is subject to the mNAV governor:
+              MSTR issues anytime mNAV &gt; 1.0× (above NAV), halted below 1.0×.
+              Dividend coverage is cumulative — MSTR catches up when mNAV recovers.
             </p>
 
             <p style={{ margin: 0, marginTop: 10 }}>
-              <strong style={{ color: "var(--t2)" }}>Limitations</strong>: The pace model assumes issuance is relatively stable day-to-day.
-              In reality, issuance volume varies dramatically (e.g., $7.1M vs $1,180M in recent periods). All estimates are provisional
-              and will be replaced by confirmed figures as 8-K filings are processed (typically 2–5 business days after issuance).
+              <strong style={{ color: "var(--t2)" }}>Circular dependency</strong>: New STRC shares → higher preferred notional → higher EV → higher mNAV.
+              More BTC → higher BTC reserve → lower mNAV. Resolved day-by-day sequentially — each day&apos;s mNAV depends on
+              the previous day&apos;s state plus today&apos;s market data. When a new 8-K arrives, estimates are replaced with
+              volume-weighted actuals.
             </p>
           </div>
         )}

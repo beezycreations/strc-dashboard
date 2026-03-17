@@ -8,6 +8,7 @@ import {
   strcRateHistory,
   sofrHistory,
   dailyMetrics,
+  accruedDividends,
 } from "@/src/db/schema";
 import {
   realizedVol,
@@ -23,7 +24,10 @@ import {
   computeMnav as computeMnavShared,
   mnavRegimeFromValue,
   ANNUAL_OBLIGATIONS,
+  MSTR_SHARES_AT_FILING,
 } from "@/src/lib/data/capital-structure";
+import { calibrateParticipationRate } from "@/src/lib/calculators/issuance-engine";
+import { runForecast, type DayMarketData } from "@/src/lib/calculators/flywheel-forecast";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -91,6 +95,21 @@ export async function GET(request: NextRequest) {
       .from(sofrHistory)
       .orderBy(desc(sofrHistory.date))
       .limit(1);
+
+    // ── BTC YTD baseline ──
+    // Find BTC holdings closest to Jan 1 of current year
+    const currentYear = new Date().getFullYear();
+    const jan1Str = `${currentYear}-01-01`;
+
+    // Get the latest BTC holding on or before Jan 1
+    const [ytdBaselineRow] = await db
+      .select()
+      .from(btcHoldings)
+      .where(lte(btcHoldings.reportDate, jan1Str))
+      .orderBy(desc(btcHoldings.reportDate))
+      .limit(1);
+
+    const btcHoldingsYtdStart = ytdBaselineRow?.btcCount ?? null;
 
     // Minimum data guard
     if (!latestHoldings || !latestCapStructure) {
@@ -166,6 +185,100 @@ export async function GET(request: NextRequest) {
     const monthlyObligations = totalObligations / 12;
     const usdReserveMonths =
       monthlyObligations > 0 ? usdReserve / monthlyObligations : null;
+
+    // ── BTC Yield YTD ──
+    // btc_yield_ytd = (current_btc - jan1_btc) / jan1_btc
+    // btc_dollar_gain_ytd = (current_btc - jan1_btc) × current_btc_price
+    const btcYieldYtd = (btcHoldingsYtdStart != null && btcHoldingsYtdStart > 0)
+      ? (btcCount - btcHoldingsYtdStart) / btcHoldingsYtdStart
+      : null;
+    const btcDollarGainYtd = (btcHoldingsYtdStart != null && latestBtcPrice > 0)
+      ? (btcCount - btcHoldingsYtdStart) * latestBtcPrice
+      : null;
+
+    // ── Flywheel: estimate today's STRC + MSTR issuance → BTC purchases ──
+    let estStrcProceedsUsd: number | null = null;
+    let estMstrProceedsUsd: number | null = null;
+    let estBtcPurchased: number | null = null;
+    let estAnnualDivLiability: number | null = null;
+    let mnavFlywheel: number | null = null;
+
+    try {
+      // Fetch recent STRC volume for participation rate calibration + today's forecast
+      const volumeRows = await db
+        .select({ date: sql<string>`${priceHistory.ts}::date::text`, price: priceHistory.price, volume: priceHistory.volume, ticker: priceHistory.ticker })
+        .from(priceHistory)
+        .where(
+          and(
+            eq(priceHistory.isEod, true),
+            gte(priceHistory.ts, sql`now() - interval '90 days'`),
+          ),
+        )
+        .orderBy(priceHistory.ts);
+
+      // Build volume history for calibration
+      const volByDate = new Map<string, { strc_volume: number; strc_price: number }>();
+      const btcByDate = new Map<string, number>();
+      const mstrByDate = new Map<string, { price: number; volume: number }>();
+
+      for (const row of volumeRows) {
+        const d = row.date;
+        const ticker = row.ticker.toUpperCase();
+        const price = Number(row.price);
+        const vol = Number(row.volume ?? 0);
+
+        if (ticker === "STRC") {
+          volByDate.set(d, { strc_volume: vol, strc_price: price });
+        } else if (ticker === "BTC") {
+          btcByDate.set(d, price);
+        } else if (ticker === "MSTR") {
+          mstrByDate.set(d, { price, volume: vol });
+        }
+      }
+
+      const volumeHistory = Array.from(volByDate.entries())
+        .filter(([, v]) => v.strc_price > 0)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, v]) => ({ date, ...v }));
+
+      if (volumeHistory.length > 0 && latestBtcPrice > 0) {
+        const calibration = calibrateParticipationRate(volumeHistory);
+
+        // Build market data for today
+        const todayVol = volByDate.get(dateStr);
+        const todayBtc = btcByDate.get(dateStr) ?? latestBtcPrice;
+        const todayMstr = mstrByDate.get(dateStr) ?? { price: latestMstrPrice, volume: 0 };
+
+        if (todayVol && todayVol.strc_volume > 0) {
+          const marketData: DayMarketData[] = [{
+            date: dateStr,
+            btcPrice: todayBtc,
+            strcPrice: todayVol.strc_price,
+            strcVolume: todayVol.strc_volume,
+            mstrPrice: todayMstr.price,
+            mstrVolume: todayMstr.volume,
+            mstrSharesOutstanding: MSTR_SHARES_AT_FILING,
+          }];
+
+          const result = runForecast(
+            marketData,
+            { STRC: calibration.rate },
+            { participationCalibration: calibration },
+          );
+
+          if (result.days.length > 0) {
+            const day = result.days[0];
+            estStrcProceedsUsd = day.strcProceeds;
+            estMstrProceedsUsd = day.mstrProceeds;
+            estBtcPurchased = day.btcPurchased;
+            estAnnualDivLiability = day.annualDividendLiability;
+            mnavFlywheel = day.mnav;
+          }
+        }
+      }
+    } catch (e) {
+      warnings.push(`Flywheel estimation failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     // ── STRC impairment price ──
     const totalSenior =
@@ -433,6 +546,13 @@ export async function GET(request: NextRequest) {
         strcNotionalUsd: toStr(strcNotionalUsd),
         strcMarketCapUsd: toStr(strcMarketCapUsd),
         strcTradingVolumeUsd: toStr(strcTradingVolumeUsd),
+        btcYieldYtd: toStr(btcYieldYtd),
+        btcDollarGainYtd: toStr(btcDollarGainYtd),
+        estStrcProceedsUsd: toStr(estStrcProceedsUsd),
+        estMstrProceedsUsd: toStr(estMstrProceedsUsd),
+        estBtcPurchased: toStr(estBtcPurchased),
+        estAnnualDivLiability: toStr(estAnnualDivLiability),
+        mnavFlywheel: toStr(mnavFlywheel),
       })
       .onConflictDoUpdate({
         target: dailyMetrics.date,
@@ -484,8 +604,57 @@ export async function GET(request: NextRequest) {
           strcNotionalUsd: toStr(strcNotionalUsd),
           strcMarketCapUsd: toStr(strcMarketCapUsd),
           strcTradingVolumeUsd: toStr(strcTradingVolumeUsd),
+          btcYieldYtd: toStr(btcYieldYtd),
+          btcDollarGainYtd: toStr(btcDollarGainYtd),
+          estStrcProceedsUsd: toStr(estStrcProceedsUsd),
+          estMstrProceedsUsd: toStr(estMstrProceedsUsd),
+          estBtcPurchased: toStr(estBtcPurchased),
+          estAnnualDivLiability: toStr(estAnnualDivLiability),
+          mnavFlywheel: toStr(mnavFlywheel),
         },
       });
+
+    // ── Accrued Dividends ──
+    // STRC pays monthly dividends on the last calendar day of each month.
+    // Derive accrual from the current rate and ensure current month's record exists.
+    if (strcRatePct != null) {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth(); // 0-indexed
+
+      // Current month period: 1st to last day
+      const periodStart = `${year}-${String(month + 1).padStart(2, "0")}-01`;
+      const lastDay = new Date(year, month + 1, 0).getDate();
+      const periodEnd = `${year}-${String(month + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+      // Monthly amount per share = (annual rate% / 100) x $100 par / 12
+      const monthlyAmountPerShare = (strcRatePct / 100) * 100 / 12;
+
+      // Check if current month already has a record
+      const [existing] = await db
+        .select()
+        .from(accruedDividends)
+        .where(and(
+          eq(accruedDividends.ticker, "STRC"),
+          eq(accruedDividends.periodStart, periodStart),
+        ))
+        .limit(1);
+
+      if (!existing) {
+        try {
+          await db.insert(accruedDividends).values({
+            ticker: "STRC",
+            periodStart,
+            periodEnd,
+            amountPerShare: String(monthlyAmountPerShare.toFixed(6)),
+            paid: false,
+            paymentDate: periodEnd,
+          });
+        } catch {
+          warnings.push("Failed to insert accrued dividend");
+        }
+      }
+    }
 
     return NextResponse.json({
       ok: true,

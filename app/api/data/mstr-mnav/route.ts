@@ -105,67 +105,15 @@ async function buildLiveMnav(): Promise<MnavDataPoint[] | null> {
   return result.length > 0 ? result : null;
 }
 
-/**
- * Generate deterministic mNAV data when FMP is unavailable.
- * Uses era-based mNAV estimates (no randomness) for data integrity.
- */
-function buildMockMnav(): MnavDataPoint[] {
-  const result: MnavDataPoint[] = [];
-
-  function mnavForDate(dateStr: string): number {
-    const year = parseInt(dateStr.slice(0, 4));
-    const month = parseInt(dateStr.slice(5, 7));
-    if (year === 2020) return 1.1;
-    if (year === 2021 && month <= 4) return 2.2;
-    if (year === 2021) return 1.5;
-    if (year === 2022 && month <= 6) return 0.8;
-    if (year === 2022) return 0.6;
-    if (year === 2023 && month <= 6) return 1.05;
-    if (year === 2023) return 1.3;
-    if (year === 2024 && month <= 3) return 1.6;
-    if (year === 2024 && month <= 9) return 1.4;
-    if (year === 2024) return 3.0;
-    if (year === 2025 && month <= 6) return 2.2;
-    if (year === 2025) return 1.8;
-    return 1.6;
-  }
-
-  for (const p of CONFIRMED_PURCHASES) {
-    const btcPrice = p.avg_cost;
-    const adsoThousands = getAdso(p.date);
-    const ev = getEvComponents(p.date);
-    const btcReserve = p.cumulative * btcPrice;
-
-    const mnavEstimate = mnavForDate(p.date);
-    const evTotal = btcReserve * mnavEstimate;
-    const marketCap = evTotal - ev.convertDebt - ev.prefNotional + ev.cash;
-    const mstrPrice = marketCap > 0 ? marketCap / (adsoThousands * 1000) : 0;
-
-    result.push({
-      date: p.date,
-      mnav: parseFloat(mnavEstimate.toFixed(3)),
-      mstr_price: parseFloat(mstrPrice.toFixed(2)),
-      btc_price: btcPrice,
-      cum_btc: p.cumulative,
-      ev_b: parseFloat((evTotal / 1e9).toFixed(2)),
-      btc_reserve_b: parseFloat((btcReserve / 1e9).toFixed(2)),
-    });
-  }
-
-  return result;
-}
-
 export async function GET() {
   try {
     const live = await buildLiveMnav();
     if (live) {
       return NextResponse.json({ data: live, source: "fmp" });
     }
-    const mock = buildMockMnav();
-    return NextResponse.json({ data: mock, source: "mock" });
+    return NextResponse.json({ data: [], source: "unavailable" });
   } catch (err) {
     console.error("[mstr-mnav] Error:", err);
-    const mock = buildMockMnav();
-    return NextResponse.json({ data: mock, source: "mock" });
+    return NextResponse.json({ data: [], source: "error" });
   }
 }

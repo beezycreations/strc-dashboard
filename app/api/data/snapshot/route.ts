@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { desc } from "drizzle-orm";
 import { isMarketOpen, daysToMonthEnd } from "@/src/lib/utils/market-hours";
 import { LATEST_CONFIRMED_BTC, LATEST_CONFIRMED_DATE } from "@/src/lib/data/confirmed-purchases";
-import { forecastBtcHoldings as forecastFromEngine } from "@/src/lib/calculators/issuance-engine";
+import { forecastBtcHoldings as forecastFromEngine, calibrateParticipationRate, getWeightedDailyPace } from "@/src/lib/calculators/issuance-engine";
+import { forecastFromLiveData as forecastFromFlywheel, type DayMarketData } from "@/src/lib/calculators/flywheel-forecast";
 import {
   CONVERT_DEBT_USD,
   CURRENT_PREF_NOTIONAL,
@@ -19,6 +20,8 @@ import {
 } from "@/src/lib/data/capital-structure";
 
 export const revalidate = 0;
+
+const STRC_IPO_RATE_PCT = 11.25;
 
 // ── Live price fetchers ──────────────────────────────────────────────
 
@@ -149,59 +152,113 @@ function computeMnav(params: {
   });
 }
 
-const MOCK_SNAPSHOT = {
-  strc_price: 100.45,
-  strc_par_spread_bps: 45,
-  strc_rate_pct: 11.25,
-  strc_rate_since_ipo_bps: 225,
-  strc_effective_yield: 11.2,
-  mnav: 1.2,
-  mnav_regime: "tactical",
-  mnav_30d_trend: -0.05,
-  mnav_confidence_low: 1.16,
-  mnav_confidence_high: 1.24,
-  btc_price: 70847,
-  btc_24h_pct: 2.31,
-  btc_holdings: LATEST_CONFIRMED_BTC,
-  btc_holdings_confirmed: LATEST_CONFIRMED_BTC,
-  btc_holdings_confirmed_date: LATEST_CONFIRMED_DATE,
-  btc_nav: LATEST_CONFIRMED_BTC * 70847,
-  btc_coverage_ratio: 4.3,
-  btc_impairment_price: 16700,
-  usd_reserve: 2_250_000_000,
-  usd_coverage_months: 30.2,
-  total_annual_obligations: ANNUAL_OBLIGATIONS,
-  strc_atm_deployed: ATM_DEPLOYED.STRC,
-  strc_atm_authorized: ATM_AUTHORIZED.STRC,
-  mstr_atm_deployed_est: ATM_DEPLOYED.MSTR,
-  mstr_atm_authorized: ATM_AUTHORIZED.MSTR,
-  sofr_1m_pct: 4.3,
-  days_to_announcement: 18,
-  min_rate_next_month: 11.0,
-  lp_current: 100.45,
-  lp_formula_active: true,
-  atm_last_confirmed_date: "2026-03-15", // latest 8-K period end
-  dividend_stopper_active: false,
-  btc_yield_ytd: 0.42,
-  btc_dollar_gain_ytd: 8_900_000_000,
-  btc_conversion_rate: 0.5,
-  mnav_breakeven_btc: 85300,
-  is_market_open: false,
-  last_updated: new Date().toISOString(),
-  strc_volume_today: 4200000,
-  strc_volume_avg_20d: 3100000,
-  strc_volume_ratio: 1.35,
-  atm_deployed_total: ATM_DEPLOYED.STRC,
-  atm_remaining: ATM_REMAINING.STRC,
-  atm_pace_90d_monthly: 380_000_000,
-  // Overview cards — notional = all STRC shares outstanding × $100 par
-  strc_notional: STRC_TOTAL_NOTIONAL as number | null,
-  strc_market_cap: (STRC_TOTAL_NOTIONAL / 100) * 100.45 as number | null,
-  strc_1m_vwap: null as number | null,
-  strc_trading_volume_usd: null as number | null,
-  mstr_price: null as number | null,
-  mstr_change_pct: null as number | null,
-};
+/**
+ * Build a snapshot response purely from live API prices + SEC filing constants.
+ * Used when DB is unavailable (early return or catch block).
+ */
+function buildLiveOnlySnapshot(live: LivePrices) {
+  const strcPrice = live.strc_price;
+  const btcPrice = live.btc_price;
+  const baseShares = live.mstr_shares_outstanding ?? MSTR_SHARES_AT_FILING;
+
+  // Estimate BTC holdings from issuance engine when BTC price available
+  let estBtcHoldings = LATEST_CONFIRMED_BTC;
+  let estStrcAtmDeployed = ATM_DEPLOYED.STRC;
+  let estPrefNotional = CURRENT_PREF_NOTIONAL;
+  let finalMnav: number = 0;
+  let mnavRegime: string = "unknown";
+  let mnavBreakevenBtc: number | null = null;
+
+  if (btcPrice !== null) {
+    const forecast = forecastFromEngine(btcPrice);
+    estBtcHoldings = forecast.total_estimated_btc;
+    estStrcAtmDeployed = forecast.estimated_strc_atm_deployed;
+    estPrefNotional = forecast.estimated_pref_notional;
+
+    if (live.mstr_price !== null && live.mstr_price > 0) {
+      const adjShares = estimateAdjustedShares(baseShares, ATM_DEPLOYED.MSTR, live.mstr_price);
+      finalMnav = computeMnav({
+        mstrShares: adjShares,
+        mstrPrice: live.mstr_price,
+        btcHoldings: estBtcHoldings,
+        btcPrice,
+        strcAtmDeployed: estStrcAtmDeployed,
+      });
+      mnavRegime = mnavRegimeFromValue(finalMnav);
+      const ev = (adjShares * live.mstr_price) + CONVERT_DEBT_USD + estPrefNotional - CASH_BALANCE;
+      mnavBreakevenBtc = Math.round(ev / estBtcHoldings);
+    }
+  }
+
+  const btcNav = btcPrice !== null ? Math.round(estBtcHoldings) * btcPrice : 0;
+  const btcCoverageRatio = btcPrice !== null && btcNav > 0
+    ? parseFloat((btcNav / (estStrcAtmDeployed + ANNUAL_OBLIGATIONS * 3)).toFixed(2))
+    : 0;
+
+  // Notional from live shares or SEC filing constant
+  const strcNotional = (live.strc_shares_outstanding !== null && live.strc_shares_outstanding > 0)
+    ? live.strc_shares_outstanding * 100
+    : STRC_TOTAL_NOTIONAL;
+
+  const strcMarketCap = (strcNotional != null && strcPrice !== null && strcPrice > 0)
+    ? (strcNotional / 100) * strcPrice
+    : null;
+
+  return {
+    strc_price: strcPrice,
+    strc_par_spread_bps: strcPrice !== null ? parseFloat(((strcPrice - 100) * 100).toFixed(0)) : null,
+    strc_rate_pct: null as number | null,
+    strc_rate_since_ipo_bps: null as number | null,
+    strc_effective_yield: null as number | null,
+    mnav: finalMnav,
+    mnav_regime: mnavRegime,
+    mnav_30d_trend: null as number | null,
+    mnav_confidence_low: 0,
+    mnav_confidence_high: 0,
+    btc_price: btcPrice ?? 0,
+    btc_24h_pct: live.btc_24h_pct,
+    btc_holdings: Math.round(estBtcHoldings),
+    btc_holdings_confirmed: LATEST_CONFIRMED_BTC,
+    btc_holdings_confirmed_date: LATEST_CONFIRMED_DATE,
+    btc_nav: btcNav,
+    btc_coverage_ratio: btcCoverageRatio,
+    btc_impairment_price: null as number | null,
+    usd_reserve: 0,
+    usd_coverage_months: null as number | null,
+    total_annual_obligations: ANNUAL_OBLIGATIONS,
+    strc_atm_deployed: estStrcAtmDeployed,
+    strc_atm_authorized: ATM_AUTHORIZED.STRC,
+    mstr_atm_deployed_est: ATM_DEPLOYED.MSTR,
+    mstr_atm_authorized: ATM_AUTHORIZED.MSTR,
+    sofr_1m_pct: 0,
+    days_to_announcement: daysToMonthEnd(),
+    min_rate_next_month: 0,
+    lp_current: strcPrice,
+    lp_formula_active: strcPrice !== null ? strcPrice >= 100 : false,
+    atm_last_confirmed_date: LATEST_CONFIRMED_DATE,
+    dividend_stopper_active: false,
+    btc_yield_ytd: null as number | null,
+    btc_dollar_gain_ytd: null as number | null,
+    btc_conversion_rate: getWeightedDailyPace().conversion_rate,
+    mnav_breakeven_btc: mnavBreakevenBtc,
+    is_market_open: isMarketOpen(),
+    last_updated: new Date().toISOString(),
+    strc_volume_today: live.strc_volume ?? 0,
+    strc_volume_avg_20d: 0,
+    strc_volume_ratio: 0,
+    atm_deployed_total: estStrcAtmDeployed,
+    atm_remaining: ATM_REMAINING.STRC,
+    atm_pace_90d_monthly: 0,
+    strc_notional: strcNotional as number | null,
+    strc_market_cap: strcMarketCap as number | null,
+    strc_1m_vwap: live.strc_price_avg_50 ?? null as number | null,
+    strc_trading_volume_usd: (live.strc_volume != null && live.strc_price != null)
+      ? live.strc_volume * live.strc_price
+      : null as number | null,
+    mstr_price: live.mstr_price,
+    mstr_change_pct: live.mstr_change_pct,
+  };
+}
 
 export async function GET() {
   try {
@@ -297,124 +354,56 @@ export async function GET() {
     // Await live prices (started in parallel above)
     const live = await livePromise;
 
-    // If no price data at all, fall back to mock but overlay live prices
+    // If no price data at all, build response from live API + SEC filing constants only
     if (!latestPrice && !latestRate) {
-      const mock = {
-        ...MOCK_SNAPSHOT,
-        is_market_open: isMarketOpen(),
-        days_to_announcement: daysToMonthEnd(),
-        last_updated: new Date().toISOString(),
-      };
-      // Overlay live prices onto mock
-      if (live.btc_price !== null) {
-        mock.btc_price = live.btc_price;
-        mock.btc_nav = mock.btc_holdings * live.btc_price;
-        mock.btc_coverage_ratio = parseFloat(
-          (mock.btc_nav / (mock.strc_atm_deployed + mock.total_annual_obligations * 3)).toFixed(2)
-        );
-      }
-      if (live.btc_24h_pct !== null) {
-        mock.btc_24h_pct = live.btc_24h_pct;
-      }
-      if (live.strc_price !== null) {
-        mock.strc_price = live.strc_price;
-        mock.strc_par_spread_bps = parseFloat(((live.strc_price - 100) * 100).toFixed(0));
-        mock.strc_effective_yield = parseFloat(
-          ((mock.strc_rate_pct / live.strc_price) * 100).toFixed(2)
-        );
-        mock.lp_current = live.strc_price;
-        mock.lp_formula_active = live.strc_price >= 100;
-      }
-      // ── 8-K-derived forecast: estimate BTC holdings + mNAV ──
-      if (live.btc_price !== null && live.mstr_price !== null && live.mstr_price > 0) {
-        const baseShares = live.mstr_shares_outstanding ?? MSTR_SHARES_AT_FILING;
-
-        // Use issuance engine (8-K pace-based, no volume/participation rate needed)
-        const forecast = forecastFromEngine(live.btc_price);
-        mock.btc_holdings = forecast.total_estimated_btc;
-        mock.btc_holdings_confirmed = LATEST_CONFIRMED_BTC;
-        mock.btc_nav = mock.btc_holdings * live.btc_price;
-        mock.strc_atm_deployed = forecast.estimated_strc_atm_deployed;
-        const adjShares = estimateAdjustedShares(baseShares, mock.mstr_atm_deployed_est, live.mstr_price);
-        mock.mnav = computeMnav({
-          mstrShares: adjShares,
-          mstrPrice: live.mstr_price,
-          btcHoldings: mock.btc_holdings,
-          btcPrice: live.btc_price,
-          strcAtmDeployed: mock.strc_atm_deployed,
-        });
-        mock.mnav_regime = mnavRegimeFromValue(mock.mnav);
-        const ev = (adjShares * live.mstr_price) + CONVERT_DEBT_USD + forecast.estimated_pref_notional - CASH_BALANCE;
-        mock.mnav_breakeven_btc = Math.round(ev / mock.btc_holdings);
-      }
-      // Overlay live STRC market data
-      // FMP marketCap for STRC is wrong (returns MSTR's), so compute from notional
-      if (live.strc_shares_outstanding !== null && live.strc_shares_outstanding > 0) {
-        mock.strc_notional = live.strc_shares_outstanding * 100; // par = $100
-      }
-      // Market cap = shares × price (shares = notional / $100 par)
-      const strcPriceMock = live.strc_price ?? mock.strc_price;
-      if (mock.strc_notional != null && mock.strc_notional > 0 && strcPriceMock > 0) {
-        mock.strc_market_cap = (mock.strc_notional / 100) * strcPriceMock;
-      }
-      if (live.strc_price_avg_50 !== null) {
-        mock.strc_1m_vwap = live.strc_price_avg_50; // 50d SMA as VWAP proxy
-      }
-      if (live.strc_volume !== null && live.strc_price !== null) {
-        mock.strc_trading_volume_usd = live.strc_volume * live.strc_price;
-      }
-      // MSTR price data
-      if (live.mstr_price !== null) mock.mstr_price = live.mstr_price;
-      if (live.mstr_change_pct !== null) mock.mstr_change_pct = live.mstr_change_pct;
-      return NextResponse.json(mock);
+      return NextResponse.json(buildLiveOnlySnapshot(live));
     }
 
     // Parse values
-    const strcPrice = latestPrice ? parseFloat(latestPrice.price) : MOCK_SNAPSHOT.strc_price;
-    const ratePct = latestRate ? parseFloat(latestRate.ratePct) : MOCK_SNAPSHOT.strc_rate_pct;
-    const sofrPct = latestSofr ? parseFloat(latestSofr.sofr1mPct) : MOCK_SNAPSHOT.sofr_1m_pct;
-    const btcCount = latestBtc ? latestBtc.btcCount : MOCK_SNAPSHOT.btc_holdings;
+    const strcPrice = latestPrice ? parseFloat(latestPrice.price) : null;
+    const ratePct = latestRate ? parseFloat(latestRate.ratePct) : null;
+    const sofrPct = latestSofr ? parseFloat(latestSofr.sofr1mPct) : 0;
+    const btcCount = latestBtc ? latestBtc.btcCount : LATEST_CONFIRMED_BTC;
 
     // Derived fields
-    const strcParSpreadBps = (strcPrice - 100) * 100;
-    const strcEffectiveYield = (ratePct / strcPrice) * 100;
+    const strcParSpreadBps = strcPrice !== null ? (strcPrice - 100) * 100 : null;
+    const strcEffectiveYield = (ratePct !== null && strcPrice !== null && strcPrice > 0)
+      ? (ratePct / strcPrice) * 100 : null;
     const daysToAnnouncement = daysToMonthEnd();
-    const minRateNextMonth = Math.max(sofrPct, ratePct - 0.25);
+    const minRateNextMonth = ratePct !== null ? Math.max(sofrPct, ratePct - 0.25) : 0;
 
-    // BTC price from daily metrics or price_history
-    const btcPrice = latestMetrics
-      ? MOCK_SNAPSHOT.btc_price // would come from price_history for BTC ticker
-      : MOCK_SNAPSHOT.btc_price;
+    // BTC price from live API (DB path still needs a BTC price for calculations)
+    const btcPrice = live.btc_price ?? 0;
 
     const btcNav = btcCount * btcPrice;
     const btcCoverageRatio = latestMetrics
       ? parseFloat(latestMetrics.btcCoverageRatio ?? "0")
-      : MOCK_SNAPSHOT.btc_coverage_ratio;
+      : 0;
     const btcImpairmentPrice = latestMetrics
       ? parseFloat(latestMetrics.strcImpairmentBtcPrice ?? "0")
-      : MOCK_SNAPSHOT.btc_impairment_price;
+      : null;
     const usdCoverageMonths = latestMetrics
       ? parseFloat(latestMetrics.usdReserveMonths ?? "0")
-      : MOCK_SNAPSHOT.usd_coverage_months;
+      : null;
 
     // Volume stats
-    const volumeToday = latestPrice?.volume ? parseFloat(latestPrice.volume) : MOCK_SNAPSHOT.strc_volume_today;
+    const volumeToday = latestPrice?.volume ? parseFloat(latestPrice.volume) : 0;
     const volumes = recentVolumes
       .filter((v) => v.volume)
       .map((v) => parseFloat(v.volume!));
     const volumeAvg20d =
       volumes.length > 0
         ? volumes.reduce((a, b) => a + b, 0) / volumes.length
-        : MOCK_SNAPSHOT.strc_volume_avg_20d;
+        : 0;
     const volumeRatio = volumeAvg20d > 0 ? volumeToday / volumeAvg20d : 1;
 
     // ATM
     const strcAtmDeployed = latestCap
       ? parseFloat(latestCap.strcAtmDeployedUsd ?? "0")
-      : MOCK_SNAPSHOT.strc_atm_deployed;
+      : ATM_DEPLOYED.STRC;
     const strcAtmAuthorized = latestCap
       ? parseFloat(latestCap.strcAtmAuthorizedUsd ?? "0")
-      : MOCK_SNAPSHOT.strc_atm_authorized;
+      : ATM_AUTHORIZED.STRC;
     const atmRemaining = strcAtmAuthorized - strcAtmDeployed;
 
     // ATM pace: sum last 90 days of issuance / 3
@@ -424,46 +413,83 @@ export async function GET() {
     const atmPace90dMonthly = atmTotal90d / 3;
 
     // mNAV
-    const mnav = latestMetrics ? parseFloat(latestMetrics.mnav ?? "0") : MOCK_SNAPSHOT.mnav;
-    const mnavLow = latestMetrics ? parseFloat(latestMetrics.mnavLow ?? "0") : MOCK_SNAPSHOT.mnav_confidence_low;
-    const mnavHigh = latestMetrics ? parseFloat(latestMetrics.mnavHigh ?? "0") : MOCK_SNAPSHOT.mnav_confidence_high;
-    const mnavRegime = latestMetrics?.mnavRegime ?? MOCK_SNAPSHOT.mnav_regime;
+    const mnav = latestMetrics ? parseFloat(latestMetrics.mnav ?? "0") : 0;
+    const mnavLow = latestMetrics ? parseFloat(latestMetrics.mnavLow ?? "0") : 0;
+    const mnavHigh = latestMetrics ? parseFloat(latestMetrics.mnavHigh ?? "0") : 0;
+    const mnavRegime = latestMetrics?.mnavRegime ?? "unknown";
 
     // Capital structure
     const usdReserve = latestCap
       ? parseFloat(latestCap.usdReserveUsd ?? "0")
-      : MOCK_SNAPSHOT.usd_reserve;
+      : 0;
     const totalAnnualObligations = latestCap
       ? parseFloat(latestCap.totalAnnualObligations ?? "0")
-      : MOCK_SNAPSHOT.total_annual_obligations;
+      : ANNUAL_OBLIGATIONS;
     const mstrAtmDeployed = latestCap
       ? parseFloat(latestCap.mstrAtmDeployedUsd ?? "0")
-      : MOCK_SNAPSHOT.mstr_atm_deployed_est;
+      : ATM_DEPLOYED.MSTR;
     const mstrAtmAuthorized = latestCap
       ? parseFloat(latestCap.mstrAtmAuthorizedUsd ?? "0")
-      : MOCK_SNAPSHOT.mstr_atm_authorized;
+      : ATM_AUTHORIZED.MSTR;
 
     const dividendStopperActive = latestDiv ? !latestDiv.paid : false;
 
     // Overlay live prices when available (fresher than DB)
     const finalStrcPrice = live.strc_price ?? strcPrice;
     const finalBtcPrice = live.btc_price ?? btcPrice;
-    const finalBtc24h = live.btc_24h_pct ?? MOCK_SNAPSHOT.btc_24h_pct;
+    const finalBtc24h = live.btc_24h_pct ?? null;
     const finalBtcNav = btcCount * finalBtcPrice;
-    const finalStrcParSpreadBps = parseFloat(((finalStrcPrice - 100) * 100).toFixed(0));
-    const finalEffYield = parseFloat(((ratePct / finalStrcPrice) * 100).toFixed(2));
+    const finalStrcParSpreadBps = finalStrcPrice != null ? parseFloat(((finalStrcPrice - 100) * 100).toFixed(0)) : null;
+    const finalEffYield = (ratePct !== null && finalStrcPrice != null && finalStrcPrice > 0)
+      ? parseFloat(((ratePct / finalStrcPrice) * 100).toFixed(2)) : null;
 
-    // ── 8-K-derived forecast: estimate BTC holdings + capital structure ──
+    // ── Flywheel-based forecast: estimate BTC holdings + capital structure ──
     const baseShares = live.mstr_shares_outstanding ?? MSTR_SHARES_AT_FILING;
     let estBtcHoldings = btcCount;
     let estStrcAtmDeployed = strcAtmDeployed;
     let estPrefNotional = CURRENT_PREF_NOTIONAL;
 
     if (live.btc_price !== null) {
-      const forecast = forecastFromEngine(live.btc_price);
-      estBtcHoldings = forecast.total_estimated_btc;
-      estStrcAtmDeployed = forecast.estimated_strc_atm_deployed;
-      estPrefNotional = forecast.estimated_pref_notional;
+      // Try flywheel with volume data first, fall back to pace-based
+      let usedFlywheel = false;
+
+      if (live.strc_price !== null && live.mstr_price !== null) {
+        // Build historical volume for flywheel
+        const volRows = recentVolumes.filter((v) => v.volume);
+        if (volRows.length >= 5) {
+          const volHistory = volRows.map((v) => ({
+            date: new Date(v.ts).toISOString().slice(0, 10),
+            strc_volume: parseFloat(v.volume!),
+            strc_price: parseFloat(v.price),
+          }));
+          const calibration = calibrateParticipationRate(volHistory);
+
+          if (calibration.source === "calibrated") {
+            const flywheelResult = forecastFromFlywheel({
+              btcPrice: live.btc_price,
+              strcPrice: live.strc_price,
+              strcVolume: live.strc_volume ?? 0,
+              mstrPrice: live.mstr_price,
+              mstrVolume: live.mstr_volume ?? 0,
+              mstrSharesOutstanding: baseShares,
+              participationRates: { STRC: calibration.rate },
+              participationCalibration: calibration,
+            });
+            estBtcHoldings = flywheelResult.estimatedBtcHoldings;
+            estStrcAtmDeployed = flywheelResult.estimatedStrcAtmDeployed;
+            estPrefNotional = flywheelResult.estimatedTotalPrefNotional;
+            usedFlywheel = true;
+          }
+        }
+      }
+
+      if (!usedFlywheel) {
+        // Fallback: pace-based estimation (no volume data)
+        const forecast = forecastFromEngine(live.btc_price);
+        estBtcHoldings = forecast.total_estimated_btc;
+        estStrcAtmDeployed = forecast.estimated_strc_atm_deployed;
+        estPrefNotional = forecast.estimated_pref_notional;
+      }
     }
 
     const adjShares = (live.mstr_price !== null && live.mstr_price > 0)
@@ -479,15 +505,17 @@ export async function GET() {
         })
       : mnav;
 
+    const pace = getWeightedDailyPace();
+
     const snapshot = {
       strc_price: finalStrcPrice,
       strc_par_spread_bps: finalStrcParSpreadBps,
       strc_rate_pct: ratePct,
-      strc_rate_since_ipo_bps: MOCK_SNAPSHOT.strc_rate_since_ipo_bps,
+      strc_rate_since_ipo_bps: ratePct !== null ? Math.round((ratePct - STRC_IPO_RATE_PCT) * 100) : null,
       strc_effective_yield: finalEffYield,
       mnav: finalMnav,
       mnav_regime: live.mstr_price !== null ? mnavRegimeFromValue(finalMnav) : mnavRegime,
-      mnav_30d_trend: MOCK_SNAPSHOT.mnav_30d_trend,
+      mnav_30d_trend: null as number | null,
       mnav_confidence_low: mnavLow,
       mnav_confidence_high: mnavHigh,
       btc_price: finalBtcPrice,
@@ -511,15 +539,15 @@ export async function GET() {
       days_to_announcement: daysToAnnouncement,
       min_rate_next_month: minRateNextMonth,
       lp_current: finalStrcPrice,
-      lp_formula_active: finalStrcPrice >= 100,
-      atm_last_confirmed_date: MOCK_SNAPSHOT.atm_last_confirmed_date,
+      lp_formula_active: finalStrcPrice != null ? finalStrcPrice >= 100 : false,
+      atm_last_confirmed_date: latestBtc?.reportDate ?? LATEST_CONFIRMED_DATE,
       dividend_stopper_active: dividendStopperActive,
-      btc_yield_ytd: MOCK_SNAPSHOT.btc_yield_ytd,
-      btc_dollar_gain_ytd: MOCK_SNAPSHOT.btc_dollar_gain_ytd,
-      btc_conversion_rate: MOCK_SNAPSHOT.btc_conversion_rate,
-      mnav_breakeven_btc: (live.mstr_price !== null && live.mstr_price > 0)
+      btc_yield_ytd: latestMetrics?.btcYieldYtd ? parseFloat(latestMetrics.btcYieldYtd) : null,
+      btc_dollar_gain_ytd: latestMetrics?.btcDollarGainYtd ? parseFloat(latestMetrics.btcDollarGainYtd) : null,
+      btc_conversion_rate: pace.conversion_rate,
+      mnav_breakeven_btc: (live.mstr_price !== null && live.mstr_price > 0 && estBtcHoldings > 0)
         ? Math.round(((adjShares * live.mstr_price) + CONVERT_DEBT_USD + estPrefNotional - CASH_BALANCE) / estBtcHoldings)
-        : MOCK_SNAPSHOT.mnav_breakeven_btc,
+        : null as number | null,
       is_market_open: isMarketOpen(),
       last_updated: new Date().toISOString(),
       strc_volume_today: volumeToday,
@@ -539,21 +567,21 @@ export async function GET() {
         const notional = latestMetrics?.strcNotionalUsd ? parseFloat(latestMetrics.strcNotionalUsd)
           : (live.strc_shares_outstanding ? live.strc_shares_outstanding * 100
           : STRC_TOTAL_NOTIONAL);
-        if (notional != null && finalStrcPrice > 0) return (notional / 100) * finalStrcPrice;
+        if (notional != null && finalStrcPrice != null && finalStrcPrice > 0) return (notional / 100) * finalStrcPrice;
         return null;
       })(),
       strc_1m_vwap: latestMetrics?.strcVwap1m ? parseFloat(latestMetrics.strcVwap1m)
         : (live.strc_price_avg_50 ?? null),
       strc_trading_volume_usd: latestMetrics?.strcTradingVolumeUsd ? parseFloat(latestMetrics.strcTradingVolumeUsd)
         : (live.strc_volume != null && live.strc_price != null ? live.strc_volume * live.strc_price
-        : (volumeToday > 0 ? volumeToday * finalStrcPrice : null)),
+        : (volumeToday > 0 && finalStrcPrice != null ? volumeToday * finalStrcPrice : null)),
       mstr_price: live.mstr_price,
       mstr_change_pct: live.mstr_change_pct,
     };
 
     return NextResponse.json(snapshot);
   } catch {
-    // DB not configured or connection error — return mock data with live prices
+    // DB not configured or connection error — build from live prices + SEC filing constants
     const live: LivePrices = await fetchLivePrices().catch(() => ({
       btc_price: null,
       btc_24h_pct: null,
@@ -569,69 +597,6 @@ export async function GET() {
       quote_timestamp: null,
     }));
 
-    const mock = {
-      ...MOCK_SNAPSHOT,
-      is_market_open: isMarketOpen(),
-      days_to_announcement: daysToMonthEnd(),
-      last_updated: new Date().toISOString(),
-    };
-
-    if (live.btc_price !== null) {
-      mock.btc_price = live.btc_price;
-      mock.btc_nav = mock.btc_holdings * live.btc_price;
-      mock.btc_24h_pct = live.btc_24h_pct ?? mock.btc_24h_pct;
-      mock.btc_coverage_ratio = parseFloat(
-        (mock.btc_nav / (mock.strc_atm_deployed + mock.total_annual_obligations * 3)).toFixed(2)
-      );
-    }
-    // ── 8-K-derived forecast for error fallback path ──
-    if (live.btc_price !== null && live.mstr_price !== null && live.mstr_price > 0) {
-      const baseShares = live.mstr_shares_outstanding ?? MSTR_SHARES_AT_FILING;
-      const forecast = forecastFromEngine(live.btc_price);
-      mock.btc_holdings = forecast.total_estimated_btc;
-      mock.btc_nav = mock.btc_holdings * live.btc_price;
-      mock.strc_atm_deployed = forecast.estimated_strc_atm_deployed;
-      const adjShares = estimateAdjustedShares(baseShares, mock.mstr_atm_deployed_est, live.mstr_price);
-      mock.mnav = computeMnav({
-        mstrShares: adjShares,
-        mstrPrice: live.mstr_price,
-        btcHoldings: mock.btc_holdings,
-        btcPrice: live.btc_price,
-        strcAtmDeployed: mock.strc_atm_deployed,
-      });
-      mock.mnav_regime = mnavRegimeFromValue(mock.mnav);
-      const ev = (adjShares * live.mstr_price) + CONVERT_DEBT_USD + forecast.estimated_pref_notional - CASH_BALANCE;
-      mock.mnav_breakeven_btc = Math.round(ev / mock.btc_holdings);
-    }
-    if (live.strc_price !== null) {
-      mock.strc_price = live.strc_price;
-      mock.strc_par_spread_bps = parseFloat(((live.strc_price - 100) * 100).toFixed(0));
-      mock.strc_effective_yield = parseFloat(
-        ((mock.strc_rate_pct / live.strc_price) * 100).toFixed(2)
-      );
-      mock.lp_current = live.strc_price;
-      mock.lp_formula_active = live.strc_price >= 100;
-    }
-    // Overlay live STRC market data
-    // FMP marketCap for STRC is wrong (returns MSTR's), so compute from notional
-    if (live.strc_shares_outstanding !== null && live.strc_shares_outstanding > 0) {
-      mock.strc_notional = live.strc_shares_outstanding * 100;
-    }
-    // Market cap = (notional / $100 par) × current price
-    const strcPrice = live.strc_price ?? mock.strc_price;
-    if (mock.strc_notional != null && mock.strc_notional > 0 && strcPrice > 0) {
-      mock.strc_market_cap = (mock.strc_notional / 100) * strcPrice;
-    }
-    if (live.strc_price_avg_50 !== null) {
-      mock.strc_1m_vwap = live.strc_price_avg_50;
-    }
-    if (live.strc_volume !== null && live.strc_price !== null) {
-      mock.strc_trading_volume_usd = live.strc_volume * live.strc_price;
-    }
-    // MSTR price data
-    if (live.mstr_price !== null) mock.mstr_price = live.mstr_price;
-    if (live.mstr_change_pct !== null) mock.mstr_change_pct = live.mstr_change_pct;
-
-    return NextResponse.json(mock);
+    return NextResponse.json(buildLiveOnlySnapshot(live));
   }
 }

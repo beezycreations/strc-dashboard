@@ -398,10 +398,10 @@ export async function GET() {
       .filter((m) => m.corrStrcMstr30d || m.corrStrcBtc30d)
       .map((m) => ({
         date: m.date,
-        strc_mstr: pf(m.corrStrcMstr30d) ?? 0,
-        strc_btc: pf(m.corrStrcBtc30d) ?? 0,
-        mstr_btc: 0,
-        strc_spy: pf(m.corrStrcSpy30d) ?? 0,
+        strc_mstr: pf(m.corrStrcMstr30d) ?? null,
+        strc_btc: pf(m.corrStrcBtc30d) ?? null,
+        mstr_btc: null,
+        strc_spy: pf(m.corrStrcSpy30d) ?? null,
       }));
 
     const lastCorr =

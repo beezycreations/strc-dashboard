@@ -1,157 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { desc, gte } from "drizzle-orm";
-import {
-  CONVERT_DEBT_USD,
-  CURRENT_PREF_NOTIONAL,
-  CASH_BALANCE,
-  MSTR_SHARES_AT_FILING,
-} from "@/src/lib/data/capital-structure";
 
 export const revalidate = 0;
 
 const STRC_IPO_DATE = "2025-07-29";
-
-function generateMockTimeSeries(days: number) {
-  const now = new Date();
-  // Ensure mock data never starts before STRC IPO date
-  const ipoDate = new Date(STRC_IPO_DATE + "T00:00:00");
-  const cutoffDate = new Date(now);
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const startDate = cutoffDate > ipoDate ? cutoffDate : ipoDate;
-
-  const prices: { date: string; strc: number; mstr: number; btc: number; strf: number; strk: number }[] = [];
-  const rates: { date: string; strc_rate_pct: number; sofr_1m_pct: number }[] = [];
-  const mnavHistory: { date: string; mnav: number; mnav_low: number; mnav_high: number }[] = [];
-  const volHistory: { date: string; vol_30d_strc: number; vol_30d_mstr: number; vol_30d_btc: number }[] = [];
-  const corrHistory: { date: string; corr_strc_mstr: number; corr_strc_btc: number }[] = [];
-  const btcCoverageHistory: { date: string; btc_coverage_ratio: number }[] = [];
-
-  const totalDays = Math.ceil((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-
-  let strcPrice = 99.5;
-  let mstrPrice = 380;
-  let btcPrice = 67000;
-  let strfPrice = 88.0;
-  let strkPrice = 95.0;
-  let sofrRate = 4.35;
-  let mnav = 1.18;
-
-  // Dividend schedule rate lookup for mock data (rate by "YYYY-MM" period)
-  function prevMockMonth(ym: string): string {
-    const [y, m] = ym.split("-").map(Number);
-    const pm = m === 1 ? 12 : m - 1;
-    const py = m === 1 ? y - 1 : y;
-    return `${py}-${String(pm).padStart(2, "0")}`;
-  }
-  const mockDivRateByMonth = new Map<string, number>([
-    ["2025-08", 9.00],
-    ["2025-09", 10.00],
-    ["2025-10", 10.25],
-    ["2025-11", 10.50],
-    ["2025-12", 10.75],
-    ["2026-01", 11.00],
-    ["2026-02", 11.25],
-    ["2026-03", 11.50],
-  ]);
-
-  for (let i = totalDays; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    const dateStr = d.toISOString().slice(0, 10);
-    if (dateStr < STRC_IPO_DATE) continue;
-
-    // Random walk
-    strcPrice = Math.max(95, Math.min(108, strcPrice + (Math.random() - 0.48) * 0.3));
-    mstrPrice = Math.max(280, Math.min(520, mstrPrice + (Math.random() - 0.47) * 8));
-    btcPrice = Math.max(55000, Math.min(85000, btcPrice + (Math.random() - 0.47) * 1200));
-    strfPrice = Math.max(82, Math.min(96, strfPrice + (Math.random() - 0.49) * 0.25));
-    strkPrice = Math.max(88, Math.min(105, strkPrice + (Math.random() - 0.48) * 0.35));
-    // mNAV derived from Strategy formula: EV / BTC Reserve
-    // EV = MSTR MCap + converts + preferred − cash (from shared capital-structure module)
-    const mockMstrMcap = mstrPrice * MSTR_SHARES_AT_FILING;
-    const mockEV = mockMstrMcap + CONVERT_DEBT_USD + CURRENT_PREF_NOTIONAL - CASH_BALANCE;
-    const mockBtcReserve = btcPrice * 761068;
-    mnav = mockBtcReserve > 0 ? mockEV / mockBtcReserve : 1.0;
-
-    // STRC rate from dividend schedule (rate takes effect on record date = 15th)
-    const month = dateStr.slice(0, 7);
-    const day = parseInt(dateStr.slice(8, 10));
-    const effectiveMonth = day < 15 ? prevMockMonth(month) : month;
-    const strcRate = mockDivRateByMonth.get(effectiveMonth) ?? mockDivRateByMonth.get(prevMockMonth(effectiveMonth)) ?? 9.0;
-
-    prices.push({
-      date: dateStr,
-      strc: +strcPrice.toFixed(2),
-      mstr: +mstrPrice.toFixed(2),
-      btc: +btcPrice.toFixed(0),
-      strf: +strfPrice.toFixed(2),
-      strk: +strkPrice.toFixed(2),
-    });
-
-    rates.push({
-      date: dateStr,
-      strc_rate_pct: +strcRate.toFixed(2),
-      sofr_1m_pct: +(sofrRate + (Math.random() - 0.5) * 0.02).toFixed(4),
-    });
-
-    mnavHistory.push({
-      date: dateStr,
-      mnav: +mnav.toFixed(4),
-      mnav_low: +(mnav - 0.04).toFixed(4),
-      mnav_high: +(mnav + 0.04).toFixed(4),
-    });
-
-    volHistory.push({
-      date: dateStr,
-      vol_30d_strc: +(8 + Math.random() * 6).toFixed(2),
-      vol_30d_mstr: +(55 + Math.random() * 25).toFixed(2),
-      vol_30d_btc: +(40 + Math.random() * 20).toFixed(2),
-    });
-
-    corrHistory.push({
-      date: dateStr,
-      corr_strc_mstr: +(0.15 + Math.random() * 0.35).toFixed(4),
-      corr_strc_btc: +(0.08 + Math.random() * 0.3).toFixed(4),
-    });
-
-    // BTC coverage ratio: derived from formula (same as snapshot)
-    // btcNav / (strcAtmDeployed + annualObligations * 3)
-    const mockBtcHoldings = 761068;
-    const mockBtcNav = btcPrice * mockBtcHoldings;
-    const mockStrcAtmDeployed = 3_842_800_000;
-    const mockAnnualObligations = 689_000_000;
-    const mockCoverageDenom = mockStrcAtmDeployed + mockAnnualObligations * 3;
-    const covRatio = mockCoverageDenom > 0 ? mockBtcNav / mockCoverageDenom : 0;
-    btcCoverageHistory.push({
-      date: dateStr,
-      btc_coverage_ratio: +covRatio.toFixed(4),
-    });
-  }
-
-  // SOFR forward curve — anchored to mock 1M rate with term spread
-  const mockSofr1m = 4.3;
-  const sofrForward = [
-    { term: "1M", rate: mockSofr1m },
-    { term: "3M", rate: parseFloat((mockSofr1m - 0.15).toFixed(2)) },
-    { term: "6M", rate: parseFloat((mockSofr1m - 0.35).toFixed(2)) },
-    { term: "1Y", rate: parseFloat((mockSofr1m - 0.60).toFixed(2)) },
-    { term: "2Y", rate: parseFloat((mockSofr1m - 0.85).toFixed(2)) },
-  ];
-
-  // Mock dividend schedule
-  const mockDividends = [
-    { period: "Mar 2026", periodSort: "2026-03", recordDate: "03/15/2026", payoutDate: "03/31/2026", ratePct: 11.50, dividendPerShare: 0.96, isCurrent: true, isProRated: false, announcedDate: "2026-02-14" },
-    { period: "Feb 2026", periodSort: "2026-02", recordDate: "02/15/2026", payoutDate: "02/27/2026", ratePct: 11.25, dividendPerShare: 0.94, isCurrent: false, isProRated: false, announcedDate: "2026-01-15" },
-    { period: "Jan 2026", periodSort: "2026-01", recordDate: "01/15/2026", payoutDate: "01/30/2026", ratePct: 11.00, dividendPerShare: 0.92, isCurrent: false, isProRated: false, announcedDate: "2025-12-13" },
-    { period: "Dec 2025", periodSort: "2025-12", recordDate: "12/15/2025", payoutDate: "12/31/2025", ratePct: 10.75, dividendPerShare: 0.90, isCurrent: false, isProRated: false, announcedDate: "2025-11-15" },
-    { period: "Nov 2025", periodSort: "2025-11", recordDate: "11/15/2025", payoutDate: "11/28/2025", ratePct: 10.50, dividendPerShare: 0.88, isCurrent: false, isProRated: false, announcedDate: "2025-10-15" },
-    { period: "Oct 2025", periodSort: "2025-10", recordDate: "10/15/2025", payoutDate: "10/31/2025", ratePct: 10.25, dividendPerShare: 0.85, isCurrent: false, isProRated: false, announcedDate: "2025-09-13" },
-    { period: "Sep 2025", periodSort: "2025-09", recordDate: "09/15/2025", payoutDate: "09/30/2025", ratePct: 10.00, dividendPerShare: 0.83, isCurrent: false, isProRated: false, announcedDate: "2025-08-14" },
-    { period: "Aug 2025", periodSort: "2025-08", recordDate: "08/15/2025", payoutDate: "08/29/2025", ratePct: 9.00, dividendPerShare: 0.80, isCurrent: false, isProRated: true, announcedDate: "2025-07-29" },
-  ];
-
-  return { prices, rates, mnav: mnavHistory, vol: volHistory, corr: corrHistory, btc_coverage: btcCoverageHistory, sofr_forward: sofrForward, dividends: mockDividends };
-}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -200,7 +52,7 @@ export async function GET(request: NextRequest) {
       .orderBy(dailyMetrics.date);
 
     if (priceRows.length === 0 && rateRows.length === 0) {
-      return NextResponse.json(generateMockTimeSeries(days));
+      return NextResponse.json({ prices: [], rates: [], mnav: [], vol: [], corr: [], btc_coverage: [], sofr_forward: [], dividends: [] });
     }
 
     // Group prices by date
@@ -218,23 +70,37 @@ export async function GET(request: NextRequest) {
       .filter(([, vals]) => vals.strc && vals.strc > 0)
       .map(([date, vals]) => ({
         date,
-        strc: vals.strc ?? 0,
-        mstr: vals.mstr ?? 0,
-        btc: vals.btc ?? 0,
-        strf: vals.strf ?? 0,
-        strk: vals.strk ?? 0,
+        strc: vals.strc ?? null,
+        mstr: vals.mstr ?? null,
+        btc: vals.btc ?? null,
+        strf: vals.strf ?? null,
+        strk: vals.strk ?? null,
       }));
 
     const rates = rateRows.map((r) => ({
       date: r.effectiveDate,
       strc_rate_pct: parseFloat(r.ratePct),
-      sofr_1m_pct: 0,
+      sofr_1m_pct: null as number | null,
     }));
 
-    // Merge SOFR into rates
-    const sofrMap = new Map(sofrRows.map((s) => [s.date, parseFloat(s.sofr1mPct)]));
+    // Merge SOFR into rates using forward-fill (closest SOFR on or before each rate date)
+    // SOFR dates (every business day) rarely match STRC rate dates (1st of month),
+    // so exact key match fails. Sort SOFR rows and binary-search for closest prior date.
+    const sofrSorted = sofrRows
+      .map((s) => ({ date: s.date, rate: parseFloat(s.sofr1mPct) }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    function findSofrOnOrBefore(targetDate: string): number | null {
+      let result: number | null = null;
+      for (const s of sofrSorted) {
+        if (s.date <= targetDate) result = s.rate;
+        else break;
+      }
+      return result;
+    }
+
     for (const r of rates) {
-      r.sofr_1m_pct = sofrMap.get(r.date) ?? r.sofr_1m_pct;
+      r.sofr_1m_pct = findSofrOnOrBefore(r.date);
     }
 
     // Build dividend schedule from rate history
@@ -308,16 +174,24 @@ export async function GET(request: NextRequest) {
         btc_coverage_ratio: parseFloat(m.btcCoverageRatio!),
       }));
 
+    const cashCoverageHistory = metricRows
+      .filter((m) => m.usdReserveMonths)
+      .map((m) => ({
+        date: m.date,
+        usd_reserve_months: parseFloat(m.usdReserveMonths!),
+      }));
+
     // Build SOFR forward curve anchored to latest 1M rate
     // Term spreads reflect market expectation of easing (inverted when rates expected to fall)
-    const latestSofr1m = sofrRows.length > 0 ? parseFloat(sofrRows[sofrRows.length - 1].sofr1mPct) : 4.3;
-    const sofrForward = [
+    const latestSofr1m = sofrRows.length > 0 ? parseFloat(sofrRows[sofrRows.length - 1].sofr1mPct) : null;
+    // Only build forward curve if we have real SOFR data
+    const sofrForward = latestSofr1m != null && latestSofr1m > 0 ? [
       { term: "1M", rate: latestSofr1m },
       { term: "3M", rate: parseFloat((latestSofr1m - 0.15).toFixed(2)) },
       { term: "6M", rate: parseFloat((latestSofr1m - 0.35).toFixed(2)) },
       { term: "1Y", rate: parseFloat((latestSofr1m - 0.60).toFixed(2)) },
       { term: "2Y", rate: parseFloat((latestSofr1m - 0.85).toFixed(2)) },
-    ];
+    ] : [];
 
     return NextResponse.json({
       prices,
@@ -326,10 +200,11 @@ export async function GET(request: NextRequest) {
       vol: volHistory,
       corr: corrHistory,
       btc_coverage: btcCoverageHistory,
+      cash_coverage: cashCoverageHistory,
       sofr_forward: sofrForward,
       dividends,
     });
   } catch {
-    return NextResponse.json(generateMockTimeSeries(days));
+    return NextResponse.json({ prices: [], rates: [], mnav: [], vol: [], corr: [], btc_coverage: [], cash_coverage: [], sofr_forward: [], dividends: [] });
   }
 }

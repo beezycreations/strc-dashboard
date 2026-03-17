@@ -528,92 +528,164 @@ export function backtestPaceModel(): PaceBacktestResult {
   };
 }
 
-// ── Volume Calibration (only for real DB volume data) ───────────────
+// ── Recency-Weighted Participation Rate Calibration ─────────────────
 
-export interface VolumeCalibration {
-  /** Calibrated participation rate = confirmed_shares / total_volume */
-  participation_rate: number;
-  /** Number of 8-K periods with matching volume data */
-  periods_with_volume: number;
+export interface ParticipationCalibration {
+  /** Recency-weighted participation rate */
+  rate: number;
+  /** Per-period breakdown */
+  perPeriodRates: Array<{
+    period_end: string;
+    rate: number;
+    weight: number;
+    shares: number;
+    volume: number;
+  }>;
+  /** Number of periods with volume data */
+  periodsUsed: number;
+  /** Source of the rate */
+  source: "calibrated" | "management_guidance" | "pace_fallback";
 }
 
+/** Module-level cache for participation rate */
+let _cachedParticipation: ParticipationCalibration | null = null;
+let _participationCacheKey = "";
+
 /**
- * Calibrate a participation rate from REAL volume data.
+ * Calibrate STRC participation rate with recency weighting.
  *
- * For each confirmed 8-K period where volume data overlaps:
- *   participation_rate = confirmed_shares_sold / sum(daily_volume)
+ * For each confirmed 8-K period:
+ *   per_period_rate = shares_sold / sum(daily_strc_volume)
  *
- * This is the ONLY valid way to compute a participation rate.
- * Only works when volume data is from the DB (not mock).
+ * Periods are weighted by PACE_DECAY^rank (most recent = rank 0).
+ * Returns weighted average across all periods with volume data.
  *
- * @returns CalibrationResult or null if insufficient data
+ * Falls back to management guidance (25%) if insufficient data.
  */
-export function calibrateFromVolume(
-  volumeHistory: Array<{
-    date: string;
-    strc_volume: number;
-    strc_price: number;
-  }>,
-): VolumeCalibration | null {
-  if (volumeHistory.length === 0) return null;
+export function calibrateParticipationRate(
+  volumeHistory: Array<{ date: string; strc_volume: number; strc_price: number }>,
+): ParticipationCalibration {
+  // Cache key: length + first/last date + volume sum (detects value changes)
+  const volSum = volumeHistory.reduce((s, v) => s + v.strc_volume, 0);
+  const cacheKey = `${volumeHistory.length}:${volumeHistory[0]?.date}:${volumeHistory[volumeHistory.length - 1]?.date}:${volSum}`;
+  if (_cachedParticipation && _participationCacheKey === cacheKey) {
+    return _cachedParticipation;
+  }
+
+  if (volumeHistory.length === 0) {
+    return { rate: 0.25, perPeriodRates: [], periodsUsed: 0, source: "management_guidance" };
+  }
 
   const metrics = getConfirmedPeriodMetrics();
-  let totalShares = 0;
-  let totalVolume = 0;
-  let periodsWithData = 0;
+  const perPeriod: ParticipationCalibration["perPeriodRates"] = [];
 
   for (const m of metrics) {
     if (m.strc_shares === 0) continue;
 
-    const periodVolume = volumeHistory
-      .filter(
-        (v) => v.date >= m.period_start && v.date <= m.period_end,
-      )
-      .reduce((s, v) => s + v.strc_volume, 0);
+    const periodVols = volumeHistory.filter(
+      (v) => v.date >= m.period_start && v.date <= m.period_end,
+    );
+    const totalVolume = periodVols.reduce((s, v) => s + v.strc_volume, 0);
 
-    if (periodVolume > 0) {
-      totalShares += m.strc_shares;
-      totalVolume += periodVolume;
-      periodsWithData++;
+    if (totalVolume > 0) {
+      perPeriod.push({
+        period_end: m.period_end,
+        rate: m.strc_shares / totalVolume,
+        weight: 0, // computed below
+        shares: m.strc_shares,
+        volume: totalVolume,
+      });
     }
   }
 
-  // Need at least 3 periods with volume data for meaningful calibration
-  if (periodsWithData < 3 || totalVolume === 0) return null;
+  // Need at least 2 periods for meaningful calibration
+  if (perPeriod.length < 2) {
+    return { rate: 0.25, perPeriodRates: perPeriod, periodsUsed: perPeriod.length, source: "management_guidance" };
+  }
 
-  return {
-    participation_rate: totalShares / totalVolume,
-    periods_with_volume: periodsWithData,
+  // Sort oldest-first, then apply recency weights
+  perPeriod.sort((a, b) => a.period_end.localeCompare(b.period_end));
+  const n = perPeriod.length;
+  let totalWeight = 0;
+  let weightedRate = 0;
+
+  for (let i = 0; i < n; i++) {
+    const rank = n - 1 - i; // 0 for most recent
+    const w = Math.pow(PACE_DECAY, rank);
+    perPeriod[i].weight = w;
+    weightedRate += perPeriod[i].rate * w;
+    totalWeight += w;
+  }
+
+  const rate = totalWeight > 0 ? weightedRate / totalWeight : 0.25;
+
+  const result: ParticipationCalibration = {
+    rate,
+    perPeriodRates: perPeriod,
+    periodsUsed: perPeriod.length,
+    source: "calibrated",
   };
+
+  _cachedParticipation = result;
+  _participationCacheKey = cacheKey;
+  return result;
 }
 
-// ── Derived Constants (for flywheel-forecast.ts alignment) ──────────
+// ── Volume-Weighted 8-K Reconciliation ──────────────────────────────
+
+export interface VolumeAllocatedDay {
+  date: string;
+  strc_shares: number;
+  strc_proceeds: number;
+  btc_estimate: number;
+}
 
 /**
- * Get 8-K-derived participation rate for the flywheel forecast engine.
+ * Allocate a confirmed 8-K period's totals proportionally to daily volume.
  *
- * Since we can't compute a true participation rate without real volume data,
- * this returns an IMPLIED rate based on:
- *   avg_daily_shares_sold / estimated_daily_market_volume
- *
- * The estimated daily STRC market volume (~4M shares/day) is derived from
- * the confirmed 8-K data and general market knowledge.
- *
- * This is ONLY used as a default for flywheel-forecast.ts.
- * The issuance engine's pace-based approach is always preferred.
+ * Instead of spreading evenly across trading days, each day gets a share
+ * proportional to its trading volume:
+ *   day_shares = period.strc_shares × (day_volume / total_period_volume)
  */
-export function getImpliedParticipationRate(): number {
-  const metrics = getConfirmedPeriodMetrics();
-  if (metrics.length === 0) return 0.03; // Safe fallback
+export function allocateByVolume(
+  period: PeriodMetrics,
+  dailyVolumes: Array<{ date: string; strc_volume: number }>,
+): VolumeAllocatedDay[] {
+  const periodVols = dailyVolumes.filter(
+    (v) => v.date >= period.period_start && v.date <= period.period_end && v.strc_volume > 0,
+  );
 
-  const totalShares = metrics.reduce((s, m) => s + m.strc_shares, 0);
-  const totalDays = metrics.reduce((s, m) => s + m.trading_days, 0);
-  const avgDailyShares = totalDays > 0 ? totalShares / totalDays : 0;
+  if (periodVols.length === 0) {
+    // Fallback: even spread across trading days
+    const days = countTradingDays(period.period_start, period.period_end);
+    const result: VolumeAllocatedDay[] = [];
+    const d = new Date(period.period_start + "T12:00:00Z");
+    const end = new Date(period.period_end + "T12:00:00Z");
+    while (d <= end) {
+      if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) {
+        result.push({
+          date: d.toISOString().slice(0, 10),
+          strc_shares: period.strc_shares / days,
+          strc_proceeds: period.strc_proceeds / days,
+          btc_estimate: period.btc_purchased / days,
+        });
+      }
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return result;
+  }
 
-  // Cannot compute true participation without real volume data.
-  // Return the daily shares sold as a reference metric.
-  // Flywheel should prefer using the pace-based approach.
-  return avgDailyShares;
+  const totalVolume = periodVols.reduce((s, v) => s + v.strc_volume, 0);
+
+  return periodVols.map((v) => {
+    const fraction = v.strc_volume / totalVolume;
+    return {
+      date: v.date,
+      strc_shares: period.strc_shares * fraction,
+      strc_proceeds: period.strc_proceeds * fraction,
+      btc_estimate: period.btc_purchased * fraction,
+    };
+  });
 }
 
 /**

@@ -233,6 +233,17 @@ export const dailyMetrics = pgTable(
     strcMarketCapUsd: numeric("strc_market_cap_usd", { precision: 20, scale: 2 }),
     strcTradingVolumeUsd: numeric("strc_trading_volume_usd", { precision: 20, scale: 2 }),
 
+    // BTC Yield YTD
+    btcYieldYtd: numeric("btc_yield_ytd", { precision: 12, scale: 6 }),
+    btcDollarGainYtd: numeric("btc_dollar_gain_ytd", { precision: 20, scale: 2 }),
+
+    // Flywheel estimates (STRC + MSTR issuance → BTC purchases)
+    estStrcProceedsUsd: numeric("est_strc_proceeds_usd", { precision: 20, scale: 2 }),
+    estMstrProceedsUsd: numeric("est_mstr_proceeds_usd", { precision: 20, scale: 2 }),
+    estBtcPurchased: numeric("est_btc_purchased", { precision: 12, scale: 4 }),
+    estAnnualDivLiability: numeric("est_annual_div_liability", { precision: 20, scale: 2 }),
+    mnavFlywheel: numeric("mnav_flywheel", { precision: 8, scale: 4 }),
+
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
 );
