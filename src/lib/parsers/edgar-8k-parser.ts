@@ -72,9 +72,9 @@ function parseNaturalDate(monthStr: string, dayStr: string, yearStr: string): st
 function extractPeriodDates(text: string): ParsedEightK["periodDates"] {
   const monthNames = "(?:January|February|March|April|May|June|July|August|September|October|November|December)";
   const patterns = [
-    // "from January 4, 2026 through January 10, 2026"
+    // "from January 4, 2026 through January 10, 2026" or "During Period March 16, 2026 to March 22, 2026"
     new RegExp(
-      `(?:from|between|during)\\s+(${monthNames})\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+(?:through|to|and)\\s+(${monthNames})\\s+(\\d{1,2}),?\\s+(\\d{4})`,
+      `(?:from|between|during)\\s+(?:period\\s+)?(${monthNames})\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+(?:through|to|and)\\s+(${monthNames})\\s+(\\d{1,2}),?\\s+(\\d{4})`,
       "i"
     ),
     // "the period January 4 - January 10, 2026"
@@ -127,6 +127,21 @@ function extractBtcPurchased(text: string): ParsedEightK["btcPurchased"] {
       }
     }
   }
+
+  // Table-based BTC extraction: "BTC Acquired ... Aggregate Purchase Price ... Average Purchase Price"
+  // Row format: "1,031  $ 76.6  $ 74,326    762,099  $ 57.69  $ 75,694"
+  const tablePattern =
+    /BTC\s+Acquired[^]*?([\d,]+)\s+\$\s*([\d,.]+)\s+\$\s*([\d,]+)\s+([\d,]+)\s+\$\s*([\d,.]+)\s+\$\s*([\d,]+)/i;
+  const tableMatch = tablePattern.exec(text);
+  if (tableMatch) {
+    const count = parseInt(tableMatch[1].replace(/,/g, ""));
+    const totalCostM = parseFloat(tableMatch[2].replace(/,/g, ""));
+    const avgPrice = parseInt(tableMatch[3].replace(/,/g, ""));
+    if (count > 0 && count < 100_000 && avgPrice > 10_000 && avgPrice < 500_000) {
+      return { count, avgPrice, totalCost: totalCostM * 1_000_000 };
+    }
+  }
+
   return undefined;
 }
 
@@ -138,6 +153,7 @@ function extractBtcHoldings(
     /([\d,]+)\s+bitcoin/i,
     /aggregate\s+bitcoin\s+holdings\s+of\s+([\d,]+)/i,
     /holds?\s+([\d,]+)\s+(?:bitcoin|btc)/i,
+    /Aggregate\s+BTC\s+Holdings\s+[^]*?([\d,]+)\s+\$/i,
   ];
 
   let count: number | null = null;
@@ -154,13 +170,19 @@ function extractBtcHoldings(
 
   if (!count) return undefined;
 
-  const costMatch =
-    /average\s+cost\s+(?:basis|per\s+bitcoin)\s+of\s+approximately\s+\$([\d,]+)/i.exec(
-      text
-    );
-  const avgCost = costMatch
-    ? parseInt(costMatch[1].replace(/,/g, ""))
-    : undefined;
+  const costPatterns = [
+    /average\s+cost\s+(?:basis|per\s+bitcoin)\s+of\s+approximately\s+\$([\d,]+)/i,
+    /Average\s+Purchase\s+Price[^]*?Aggregate\s+BTC\s+Holdings\s+[^]*?[\d,]+\s+\$\s*[\d,.]+\s+\$\s*([\d,]+)/i,
+  ];
+
+  let avgCost: number | undefined;
+  for (const cp of costPatterns) {
+    const costMatch = cp.exec(text);
+    if (costMatch) {
+      avgCost = parseInt(costMatch[1].replace(/,/g, ""));
+      break;
+    }
+  }
 
   return { count, avgCost, totalCost: avgCost ? count * avgCost : undefined };
 }
@@ -177,15 +199,16 @@ function extractAtmProceeds(
   // Look for patterns: ticker + shares_sold + notional + net_proceeds
   for (const ticker of tickers) {
     // Match ticker row in stripped table: "STRC Stock" or "MSTR Stock" followed by numbers
+    // Handle "-" or "$  -" in columns (e.g. notional value is "-" for common stock)
     const tablePattern = new RegExp(
-      `${ticker}\\s+Stock[^\\n]*?([\\d,]+)\\s*\\$?\\s*([\\d,.]+)\\s*\\$?\\s*([\\d,.]+)`,
+      `${ticker}\\s+Stock[^\\n]*?([\\d,]+)\\s*\\$?\\s*(?:[\\d,.]+|-)\\s*\\$?\\s*([\\d,.]+)`,
       "i"
     );
     const tableMatch = tablePattern.exec(text);
     if (tableMatch) {
       const shares = parseInt(tableMatch[1].replace(/,/g, ""));
-      // Second capture is notional (millions), third is net proceeds (millions)
-      const netProceedsM = parseFloat(tableMatch[3].replace(/,/g, ""));
+      // Last captured group is net proceeds (millions) — notional may be "-" for common stock
+      const netProceedsM = parseFloat(tableMatch[2].replace(/,/g, ""));
       if (shares > 0 && netProceedsM > 0) {
         const proceeds = netProceedsM * 1_000_000;
         results.push({ ticker, proceeds, shares, avgPrice: proceeds / shares });
