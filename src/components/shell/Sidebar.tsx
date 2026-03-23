@@ -11,11 +11,21 @@ const STRC_SECTIONS = [
   { id: "strc-filings", label: "Filings" },
 ];
 
+const SATA_SECTIONS = [
+  { id: "sata-market", label: "Market Summary" },
+  { id: "sata-fundamentals", label: "Fundamentals" },
+  { id: "sata-risk", label: "Risk Analysis" },
+  { id: "sata-rate", label: "Rate Engine" },
+  { id: "sata-volatility", label: "Volatility" },
+  { id: "sata-filings", label: "Filings" },
+];
+
 const NAV_SECTIONS = [
   {
     title: "MONITOR",
     items: [
       { id: "strc" as View, label: "STRC", subItems: STRC_SECTIONS },
+      { id: "sata" as View, label: "SATA", subItems: SATA_SECTIONS },
     ],
   },
   {

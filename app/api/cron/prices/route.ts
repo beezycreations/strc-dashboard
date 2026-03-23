@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
     // If market is open, fetch equity quotes
     const marketOpen = isMarketOpen();
     if (marketOpen) {
-      const tickers = ["STRC", "STRF", "STRK", "STRD", "MSTR", "SPY"] as const;
+      const tickers = ["STRC", "STRF", "STRK", "STRD", "MSTR", "SPY", "SATA", "ASST"] as const;
       for (const ticker of tickers) {
         try {
           const quote = await fetchFmpQuote(ticker);
@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
     // At market close, mark EOD for equity tickers + BTC
     if (isMarketClose()) {
       try {
-        const eodTickers = ["STRC", "STRF", "STRK", "STRD", "MSTR", "SPY"];
+        const eodTickers = ["STRC", "STRF", "STRK", "STRD", "MSTR", "SPY", "SATA", "ASST"];
         for (const ticker of eodTickers) {
           // Find latest row for this ticker today and mark as EOD
           const eodRow = results.find((r) => r.ticker === ticker);

@@ -1,7 +1,7 @@
 /**
  * Confirmed STRC ATM issuance history from SEC 8-K filings.
  * Source: SEC EDGAR / strc.live
- * Last updated: 2026-03-16 (Purchase #103)
+ * Last updated: 2026-03-23 (Purchase #104)
  *
  * Each entry represents a confirmed 8-K filing with exact shares sold,
  * net proceeds, and the coverage period. This is the ground truth for
@@ -141,6 +141,17 @@ export const CONFIRMED_STRC_ATM: ConfirmedStrcAtm[] = [
     btc_purchased: 16_794,
     avg_btc_price: 70_290,
     accession_no: "0001193125-26-107263",
+  },
+  {
+    filed: "2026-03-23",
+    type: "ATM",
+    period_start: "2026-03-16",
+    period_end: "2026-03-22",
+    shares_sold: 0,
+    net_proceeds: 0,
+    btc_purchased: 1_031,
+    avg_btc_price: 74_326,
+    accession_no: "0001193125-26-118584",
   },
 ];
 

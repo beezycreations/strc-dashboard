@@ -330,6 +330,102 @@ export const strcFilings = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// sata_rate_history — SATA variable rate tracking
+// ---------------------------------------------------------------------------
+export const sataRateHistory = pgTable(
+  "sata_rate_history",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    effectiveDate: date("effective_date").notNull(),
+    ratePct: numeric("rate_pct", { precision: 6, scale: 4 }).notNull(),
+    announcedDate: date("announced_date"),
+    isConfirmed: boolean("is_confirmed").default(false),
+    source: varchar({ length: 200 }),
+    notes: text(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    unique("uq_sata_rate_history_effective_date").on(t.effectiveDate),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// sata_daily_metrics — SATA-specific daily analytics
+// ---------------------------------------------------------------------------
+export const sataDailyMetrics = pgTable(
+  "sata_daily_metrics",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    date: date().notNull().unique(),
+
+    // Amplification & mNAV
+    amplificationRatio: numeric("amplification_ratio", { precision: 8, scale: 4 }),
+    evMnav: numeric("ev_mnav", { precision: 8, scale: 4 }),
+
+    // Yield & spread
+    sataEffectiveYield: numeric("sata_effective_yield", { precision: 8, scale: 4 }),
+    sataParSpreadBps: numeric("sata_par_spread_bps", { precision: 8, scale: 2 }),
+
+    // Volatility — SATA
+    vol30dSata: numeric("vol_30d_sata", { precision: 8, scale: 4 }),
+    vol90dSata: numeric("vol_90d_sata", { precision: 8, scale: 4 }),
+    volRatioSata: numeric("vol_ratio_sata", { precision: 8, scale: 4 }),
+
+    // Volatility — ASST
+    vol30dAsst: numeric("vol_30d_asst", { precision: 8, scale: 4 }),
+    vol90dAsst: numeric("vol_90d_asst", { precision: 8, scale: 4 }),
+
+    // Beta — SATA
+    betaSataBtc30d: numeric("beta_sata_btc_30d", { precision: 8, scale: 4 }),
+    betaSataBtc90d: numeric("beta_sata_btc_90d", { precision: 8, scale: 4 }),
+    betaSataMstr30d: numeric("beta_sata_mstr_30d", { precision: 8, scale: 4 }),
+
+    // Beta — ASST
+    betaAsstBtc30d: numeric("beta_asst_btc_30d", { precision: 8, scale: 4 }),
+    betaAsstMstr30d: numeric("beta_asst_mstr_30d", { precision: 8, scale: 4 }),
+
+    // Correlation — SATA
+    corrSataMstr30d: numeric("corr_sata_mstr_30d", { precision: 8, scale: 4 }),
+    corrSataBtc30d: numeric("corr_sata_btc_30d", { precision: 8, scale: 4 }),
+
+    // Reserve metrics
+    cashReserveMonths: numeric("cash_reserve_months", { precision: 6, scale: 2 }),
+    strcReserveValue: numeric("strc_reserve_value", { precision: 20, scale: 2 }),
+    totalReserveMonths: numeric("total_reserve_months", { precision: 6, scale: 2 }),
+
+    // Sharpe ratio — SATA
+    sharpeRatioSata: numeric("sharpe_ratio_sata", { precision: 8, scale: 4 }),
+
+    // 1Y realized vol — SATA
+    vol1ySata: numeric("vol_1y_sata", { precision: 8, scale: 4 }),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+);
+
+// ---------------------------------------------------------------------------
+// sata_filings — Strive filing data (offerings, 8-Ks)
+// ---------------------------------------------------------------------------
+export const sataFilings = pgTable(
+  "sata_filings",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    accessionNo: varchar("accession_no", { length: 30 }).notNull().unique(),
+    filingDate: date("filing_date").notNull(),
+    type: varchar({ length: 20 }).notNull(), // "IPO", "offering", "8-K"
+    sharesSold: integer("shares_sold"),
+    netProceeds: numeric("net_proceeds", { precision: 20, scale: 2 }),
+    btcPurchased: integer("btc_purchased"),
+    avgBtcPrice: numeric("avg_btc_price", { precision: 18, scale: 2 }),
+    notes: text(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_sata_filings_date").on(sql`${t.filingDate} DESC`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // accrued_dividends
 // ---------------------------------------------------------------------------
 export const accruedDividends = pgTable(

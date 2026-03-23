@@ -49,3 +49,30 @@ export function useStrcFilings() {
     revalidateOnFocus: false,
   });
 }
+
+// ── SATA Hooks ──────────────────────────────────────────────────────
+
+export function useSataSnapshot() {
+  return useSWR("/api/data/sata/snapshot", fetcher, {
+    refreshInterval: 30_000,
+    revalidateOnFocus: true,
+  });
+}
+
+export function useSataHistory(range: "1m" | "3m" | "all" = "3m") {
+  return useSWR(`/api/data/sata/history?range=${range}`, fetcher, {
+    revalidateOnFocus: false,
+  });
+}
+
+export function useSataVolatility() {
+  return useSWR("/api/data/sata/volatility", fetcher, {
+    revalidateOnFocus: false,
+  });
+}
+
+export function useSataFilings() {
+  return useSWR("/api/data/sata-filings", fetcher, {
+    revalidateOnFocus: false,
+  });
+}
