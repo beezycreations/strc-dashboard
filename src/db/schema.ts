@@ -237,6 +237,13 @@ export const dailyMetrics = pgTable(
     btcYieldYtd: numeric("btc_yield_ytd", { precision: 12, scale: 6 }),
     btcDollarGainYtd: numeric("btc_dollar_gain_ytd", { precision: 20, scale: 2 }),
 
+    // mNAV chart data (cached for historical chart — avoids FMP API calls)
+    mstrPrice: numeric("mstr_price", { precision: 18, scale: 4 }),
+    btcPrice: numeric("btc_price", { precision: 18, scale: 2 }),
+    cumBtc: numeric("cum_btc", { precision: 12, scale: 0 }),
+    evBillions: numeric("ev_billions", { precision: 12, scale: 4 }),
+    btcReserveBillions: numeric("btc_reserve_billions", { precision: 12, scale: 4 }),
+
     // Flywheel estimates (STRC + MSTR issuance → BTC purchases)
     estStrcProceedsUsd: numeric("est_strc_proceeds_usd", { precision: 20, scale: 2 }),
     estMstrProceedsUsd: numeric("est_mstr_proceeds_usd", { precision: 20, scale: 2 }),

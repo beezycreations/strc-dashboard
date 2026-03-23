@@ -5,7 +5,7 @@ import { calibrateParticipationRate, getConfirmedPeriodMetrics, allocateByVolume
 import { runForecast, type DayMarketData } from "@/src/lib/calculators/flywheel-forecast";
 import { CONFIRMED_STRC_ATM, TOTAL_STRC_SHARES, TOTAL_STRC_PROCEEDS } from "@/src/lib/data/confirmed-strc-atm";
 import { CONFIRMED_PURCHASES, LATEST_CONFIRMED_DATE } from "@/src/lib/data/confirmed-purchases";
-import { LATEST_ATM_PERIOD_END } from "@/src/lib/data/confirmed-atm-all";
+import { LATEST_ATM_PERIOD_END, CONFIRMED_ATM_PERIODS } from "@/src/lib/data/confirmed-atm-all";
 
 /**
  * Derive the latest confirmed period end from DB if newer than static data.
@@ -227,10 +227,21 @@ export async function GET() {
     const atmPeriodForDate = (dateStr: string) =>
       confirmedMetrics.find((m) => dateStr >= m.period_start && dateStr <= m.period_end);
 
+    // Build MSTR proceeds lookup from CONFIRMED_ATM_PERIODS (multi-instrument 8-K data)
+    const mstrPeriodForDate = (dateStr: string) => {
+      const period = CONFIRMED_ATM_PERIODS.find(
+        (p) => dateStr >= p.period_start && dateStr <= p.period_end,
+      );
+      if (!period) return 0;
+      const mstr = period.instruments.find((i) => i.ticker === "MSTR");
+      return mstr?.net_proceeds ?? 0;
+    };
+
     interface ConfirmedDayResult {
       date: string;
       strc_shares: number;
       strc_proceeds: number;
+      mstr_proceeds: number;
       btc_estimate: number;
     }
     const confirmedDayResults: ConfirmedDayResult[] = [];
@@ -268,32 +279,34 @@ export async function GET() {
       );
       if (periodVols.length === 0) continue;
 
-      const totalVolume = periodVols.reduce((s, v) => s + v.strc_volume, 0);
-
       // Check if we have detailed STRC ATM data for this period
-      // Try to find a matching ATM period that overlaps
       const atmPeriod = atmPeriodForDate(periodStart) ?? atmPeriodForDate(periodEnd);
       const hasStrcDetail = atmPeriod && atmPeriod.strc_shares > 0;
 
+      // MSTR proceeds for this period (from multi-instrument 8-K data)
+      const periodMstrProceeds = mstrPeriodForDate(periodStart) || mstrPeriodForDate(periodEnd);
+
+      // Full period STRC proceeds
+      const periodStrcProceeds = hasStrcDetail
+        ? atmPeriod!.strc_proceeds
+        : purchase.cost_m * 1e6;
+      const periodStrcShares = hasStrcDetail
+        ? atmPeriod!.strc_shares
+        : periodStrcProceeds / 100; // rough estimate
+
+      // Place full 8-K proceeds on the last trading day of the period
+      // (data integrity: show actuals at period level, not daily allocation)
+      const lastTradingDay = periodVols[periodVols.length - 1];
+
       for (const v of periodVols) {
-        const fraction = totalVolume > 0 ? v.strc_volume / totalVolume : 1 / periodVols.length;
-
-        // BTC: always volume-weighted from confirmed purchase
-        const dayBtc = purchase.btc * fraction;
-
-        // STRC issuance: use ATM detail if available, else estimate from BTC cost
-        const dayStrcProceeds = hasStrcDetail
-          ? atmPeriod!.strc_proceeds * fraction
-          : purchase.cost_m * 1e6 * fraction; // cost_m ≈ STRC proceeds (~100% conversion)
-        const dayStrcShares = hasStrcDetail
-          ? atmPeriod!.strc_shares * fraction
-          : dayStrcProceeds / (v.strc_price > 0 ? v.strc_price : 100);
+        const isAnchorDay = v.date === lastTradingDay.date;
 
         confirmedDayResults.push({
           date: v.date,
-          strc_shares: dayStrcShares,
-          strc_proceeds: dayStrcProceeds,
-          btc_estimate: dayBtc,
+          strc_shares: isAnchorDay ? periodStrcShares : 0,
+          strc_proceeds: isAnchorDay ? periodStrcProceeds : 0,
+          mstr_proceeds: isAnchorDay ? periodMstrProceeds : 0,
+          btc_estimate: isAnchorDay ? purchase.btc : 0,
         });
         confirmedDaySet.add(v.date);
       }
@@ -335,6 +348,7 @@ export async function GET() {
           date: v.date,
           strc_issuance_confirmed: confirmed.strc_proceeds / 1e6,
           strc_issuance_estimated: 0,
+          mstr_issuance_confirmed: confirmed.mstr_proceeds / 1e6,
           mstr_issuance_estimated: 0,
           strc_shares_issued: confirmed.strc_shares,
           mstr_shares_issued: 0,
@@ -350,6 +364,7 @@ export async function GET() {
           date: v.date,
           strc_issuance_confirmed: 0,
           strc_issuance_estimated: estimated.strcProceeds / 1e6,
+          mstr_issuance_confirmed: 0,
           mstr_issuance_estimated: estimated.mstrProceeds / 1e6,
           strc_shares_issued: estimated.strcSharesIssued,
           mstr_shares_issued: estimated.mstrSharesIssued,
@@ -365,6 +380,7 @@ export async function GET() {
         date: v.date,
         strc_issuance_confirmed: 0,
         strc_issuance_estimated: 0,
+        mstr_issuance_confirmed: 0,
         mstr_issuance_estimated: 0,
         strc_shares_issued: 0,
         mstr_shares_issued: 0,

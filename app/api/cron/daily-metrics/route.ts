@@ -25,6 +25,7 @@ import {
   mnavRegimeFromValue,
   ANNUAL_OBLIGATIONS,
   MSTR_SHARES_AT_FILING,
+  getEvComponents,
 } from "@/src/lib/data/capital-structure";
 import { calibrateParticipationRate } from "@/src/lib/calculators/issuance-engine";
 import { runForecast, type DayMarketData } from "@/src/lib/calculators/flywheel-forecast";
@@ -491,6 +492,13 @@ export async function GET(request: NextRequest) {
     // ── mNAV regime (same thresholds as snapshot) ──
     const mnavRegime = mnav != null ? mnavRegimeFromValue(mnav) : null;
 
+    // ── mNAV chart data (cached for historical chart) ──
+    const ev = getEvComponents(dateStr);
+    const evTotal = mstrMarketCap + ev.convertDebt + ev.prefNotional - ev.cash;
+    const btcReserve = btcCount * latestBtcPrice;
+    const evBillions = evTotal > 0 ? evTotal / 1e9 : null;
+    const btcReserveBillions = btcReserve > 0 ? btcReserve / 1e9 : null;
+
     // ── Write to daily_metrics ──
     const toStr = (v: number | null): string | null =>
       v != null ? String(v) : null;
@@ -548,6 +556,11 @@ export async function GET(request: NextRequest) {
         strcTradingVolumeUsd: toStr(strcTradingVolumeUsd),
         btcYieldYtd: toStr(btcYieldYtd),
         btcDollarGainYtd: toStr(btcDollarGainYtd),
+        mstrPrice: toStr(latestMstrPrice > 0 ? latestMstrPrice : null),
+        btcPrice: toStr(latestBtcPrice > 0 ? latestBtcPrice : null),
+        cumBtc: toStr(btcCount > 0 ? btcCount : null),
+        evBillions: toStr(evBillions),
+        btcReserveBillions: toStr(btcReserveBillions),
         estStrcProceedsUsd: toStr(estStrcProceedsUsd),
         estMstrProceedsUsd: toStr(estMstrProceedsUsd),
         estBtcPurchased: toStr(estBtcPurchased),
@@ -606,6 +619,11 @@ export async function GET(request: NextRequest) {
           strcTradingVolumeUsd: toStr(strcTradingVolumeUsd),
           btcYieldYtd: toStr(btcYieldYtd),
           btcDollarGainYtd: toStr(btcDollarGainYtd),
+          mstrPrice: toStr(latestMstrPrice > 0 ? latestMstrPrice : null),
+          btcPrice: toStr(latestBtcPrice > 0 ? latestBtcPrice : null),
+          cumBtc: toStr(btcCount > 0 ? btcCount : null),
+          evBillions: toStr(evBillions),
+          btcReserveBillions: toStr(btcReserveBillions),
           estStrcProceedsUsd: toStr(estStrcProceedsUsd),
           estMstrProceedsUsd: toStr(estMstrProceedsUsd),
           estBtcPurchased: toStr(estBtcPurchased),

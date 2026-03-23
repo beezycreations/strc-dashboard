@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { useVolumeAtm, useSnapshot } from "@/src/lib/hooks/use-api";
+import { useVolumeAtm, useSnapshot, useMstrMnav } from "@/src/lib/hooks/use-api";
 import Badge from "@/src/components/ui/Badge";
 import {
   ComposedChart,
@@ -27,6 +27,7 @@ interface FlywheelDay {
   date: string;
   strc_issuance_confirmed: number;
   strc_issuance_estimated: number;
+  mstr_issuance_confirmed: number;
   mstr_issuance_estimated: number;
   strc_shares_issued: number;
   mstr_shares_issued: number;
@@ -53,7 +54,8 @@ interface AtmEvent {
 export default function VolumeATMTracker() {
   const { data, isLoading } = useVolumeAtm();
   const { data: snap } = useSnapshot();
-  const [range, setRange] = useState<"1m" | "3m" | "all">("3m");
+  const { data: mnavData } = useMstrMnav();
+  const [range, setRange] = useState<"1m" | "3m" | "all">("all");
   const [showMethodology, setShowMethodology] = useState(false);
 
   const kpi = data?.kpi ?? {};
@@ -68,7 +70,7 @@ export default function VolumeATMTracker() {
         ? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())
         : range === "3m"
           ? new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
-          : new Date("2025-07-29");
+          : new Date("2025-11-01");
     const cutoffStr = cutoff.toISOString().slice(0, 10);
     return (data.volume_history as VolumeDay[]).filter((v) => v.date >= cutoffStr);
   }, [data?.volume_history, range]);
@@ -87,6 +89,7 @@ export default function VolumeATMTracker() {
         strc_volume: v.strc_volume,
         strc_issuance_confirmed: fw?.strc_issuance_confirmed ?? 0,
         strc_issuance_estimated: fw?.strc_issuance_estimated ?? 0,
+        mstr_issuance_confirmed: fw?.mstr_issuance_confirmed ?? 0,
         mstr_issuance_estimated: fw?.mstr_issuance_estimated ?? 0,
         btc_purchased: fw?.btc_purchased ?? 0,
         source: fw?.source ?? null,
@@ -94,8 +97,73 @@ export default function VolumeATMTracker() {
     });
   }, [filteredVolume, flywheelDays]);
 
-  // Tick interval for X-axis
-  const tickInterval = Math.max(1, Math.floor(chartData.length / 10));
+  // Build BTC price lookup by date from cached DB data
+  const btcPriceByDate = useMemo(() => {
+    const map = new Map<string, number>();
+    const points = mnavData?.data as Array<{ date: string; btc_price: number }> | undefined;
+    if (points) {
+      for (const p of points) {
+        if (p.date && p.btc_price) map.set(p.date, p.btc_price);
+      }
+    }
+    return map;
+  }, [mnavData]);
+
+  // Aggregate daily data into weekly buckets (Mon–Sun, labeled by week-ending Sunday)
+  const weeklyChartData = useMemo(() => {
+    if (chartData.length === 0) return [];
+
+    const weekMap = new Map<string, {
+      week: string;
+      strc_issuance_confirmed: number;
+      strc_issuance_estimated: number;
+      mstr_issuance_confirmed: number;
+      mstr_issuance_estimated: number;
+      btc_purchased: number;
+      btc_price: number | null;
+      _btcPriceDate: string; // track latest date with BTC price in this week
+    }>();
+
+    for (const d of chartData) {
+      // Get the week-ending Saturday for this date
+      const dt = new Date(d.date + "T12:00:00Z");
+      const dayOfWeek = dt.getUTCDay(); // 0=Sun, 6=Sat
+      const daysToSat = (6 - dayOfWeek + 7) % 7;
+      const sat = new Date(dt);
+      sat.setUTCDate(sat.getUTCDate() + daysToSat);
+      const weekKey = sat.toISOString().slice(0, 10);
+
+      if (!weekMap.has(weekKey)) {
+        weekMap.set(weekKey, {
+          week: weekKey,
+          strc_issuance_confirmed: 0,
+          strc_issuance_estimated: 0,
+          mstr_issuance_confirmed: 0,
+          mstr_issuance_estimated: 0,
+          btc_purchased: 0,
+          btc_price: null,
+          _btcPriceDate: "",
+        });
+      }
+      const w = weekMap.get(weekKey)!;
+      w.strc_issuance_confirmed += d.strc_issuance_confirmed;
+      w.strc_issuance_estimated += d.strc_issuance_estimated;
+      w.mstr_issuance_confirmed += d.mstr_issuance_confirmed;
+      w.mstr_issuance_estimated += d.mstr_issuance_estimated;
+      w.btc_purchased += d.btc_purchased;
+
+      // Use the latest BTC price reading within this week
+      const dayBtcPrice = btcPriceByDate.get(d.date);
+      if (dayBtcPrice != null && d.date > w._btcPriceDate) {
+        w.btc_price = dayBtcPrice;
+        w._btcPriceDate = d.date;
+      }
+    }
+
+    return Array.from(weekMap.values())
+      .sort((a, b) => a.week.localeCompare(b.week))
+      .map(({ _btcPriceDate, ...rest }) => rest);
+  }, [chartData, btcPriceByDate]);
 
   if (isLoading || !data) {
     return <div className="card"><div className="skeleton" style={{ height: 420 }} /></div>;
@@ -150,48 +218,51 @@ export default function VolumeATMTracker() {
         <KpiMini label="Est. BTC Bought" value={`${totalBtcEst.toFixed(1)} BTC`} />
       </div>
 
-      {/* Recharts ComposedChart — Stacked Bars + Volume Line */}
-      <div style={{ height: 300, marginBottom: 16 }}>
+      {/* Weekly Issuance Chart — STRC Preferred vs MSTR Common */}
+      <div style={{ height: 320, marginBottom: 16 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData} margin={{ top: 5, right: 10, bottom: 5, left: 5 }}>
+          <ComposedChart data={weeklyChartData} margin={{ top: 5, right: 10, bottom: 5, left: 5 }} barGap={2} barCategoryGap="20%">
             <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
             <XAxis
-              dataKey="date"
+              dataKey="week"
               tick={{ fontSize: 10, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
               tickFormatter={(v: string) => {
                 const d = new Date(v + "T00:00:00");
                 return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
               }}
-              interval={tickInterval}
             />
-            {/* Left Y-axis: Volume (shares) */}
+            {/* Left Y-axis: BTC Price */}
             <YAxis
-              yAxisId="vol"
-              tick={{ fontSize: 9, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
-              tickFormatter={(v: number) => fmtK(v)}
-              width={40}
+              yAxisId="btcprice"
+              tick={{ fontSize: 9, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
+              tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}K`}
+              width={42}
+              domain={["auto", "auto"]}
             />
-            {/* Right Y-axis: ATM Issuance ($M) */}
+            {/* Right Y-axis: Issuance ($M) */}
             <YAxis
               yAxisId="atm"
               orientation="right"
-              tick={{ fontSize: 9, fill: colors.btc, fontFamily: rechartsDefaults.fontFamily }}
-              tickFormatter={(v: number) => `$${v.toFixed(0)}M`}
-              width={45}
+              tick={{ fontSize: 9, fill: colors.t2, fontFamily: rechartsDefaults.fontFamily }}
+              tickFormatter={(v: number) => v >= 1000 ? `$${(v / 1000).toFixed(1)}B` : `$${v.toFixed(0)}M`}
+              width={50}
             />
             <Tooltip
               contentStyle={rechartsDefaults.tooltipStyle}
               labelFormatter={(label: unknown) => {
                 const d = new Date(String(label) + "T00:00:00");
-                return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+                return `Week ending ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
               }}
               formatter={(value: unknown, name: unknown) => {
                 const v = Number(value);
-                if (v === 0) return null;
+                if (v === 0 && String(name) !== "btc_price") return null;
+                const fmtM = (n: number) => n >= 1000 ? `$${(n / 1000).toFixed(2)}B` : `$${n.toFixed(1)}M`;
                 switch (String(name)) {
-                  case "strc_volume": return [fmtK(v) + " shares", "STRC Volume"];
-                  case "strc_issuance_confirmed": return [`$${v.toFixed(1)}M`, "STRC Issuance (8-K)"];
-                  case "strc_issuance_estimated": return [`$${v.toFixed(1)}M`, "STRC Issuance (Est.)"];
+                  case "btc_price": return v ? [`$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, "Bitcoin Price"] : null;
+                  case "strc_issuance_confirmed": return [fmtM(v), "STRC Preferred (8-K)"];
+                  case "strc_issuance_estimated": return [fmtM(v), "STRC Preferred (Est.)"];
+                  case "mstr_issuance_confirmed": return [fmtM(v), "MSTR Common (8-K)"];
+                  case "mstr_issuance_estimated": return [fmtM(v), "MSTR Common (Est.)"];
                   default: return [`${v}`, String(name)];
                 }
               }}
@@ -202,53 +273,70 @@ export default function VolumeATMTracker() {
               wrapperStyle={{ fontSize: 11, fontFamily: rechartsDefaults.fontFamily, paddingBottom: 8 }}
               formatter={(value: string) => {
                 switch (value) {
-                  case "strc_volume": return "STRC Volume";
-                  case "strc_issuance_confirmed": return "STRC (8-K)";
-                  case "strc_issuance_estimated": return "STRC (Est.)";
+                  case "btc_price": return "Bitcoin Price";
+                  case "strc_issuance_confirmed": return "STRC Pref (8-K)";
+                  case "strc_issuance_estimated": return "STRC Pref (Est.)";
+                  case "mstr_issuance_confirmed": return "MSTR Common (8-K)";
+                  case "mstr_issuance_estimated": return "MSTR Common (Est.)";
                   default: return value;
                 }
               }}
             />
-            {/* STRC volume line */}
+            {/* Bitcoin price line */}
             <Line
-              yAxisId="vol"
+              yAxisId="btcprice"
               type="monotone"
-              dataKey="strc_volume"
-              stroke={colors.accent}
+              dataKey="btc_price"
+              stroke={colors.btc}
               strokeWidth={2}
               dot={false}
-              activeDot={{ r: 4, stroke: colors.accent, fill: "#fff" }}
+              connectNulls
+              activeDot={{ r: 4, stroke: colors.btc, fill: "#fff" }}
             />
-            {/* Stacked issuance bars — STRC confirmed (green) */}
+            {/* STRC preferred issuance — confirmed (green) */}
             <Bar
               yAxisId="atm"
-              stackId="issuance"
+              stackId="strc"
               dataKey="strc_issuance_confirmed"
               fill={colors.green}
-              opacity={0.85}
-              barSize={6}
-              radius={[0, 0, 0, 0]}
+              opacity={0.9}
+              radius={[3, 3, 0, 0]}
             />
-            {/* Stacked issuance bars — STRC estimated (amber) */}
+            {/* STRC preferred issuance — estimated (amber) */}
             <Bar
               yAxisId="atm"
-              stackId="issuance"
+              stackId="strc"
               dataKey="strc_issuance_estimated"
               fill={colors.amber}
               opacity={0.7}
-              barSize={6}
-              radius={[0, 0, 0, 0]}
+              radius={[3, 3, 0, 0]}
             />
-            {/* MSTR issuance stored in DB but not charted here — displayed in Strategy BTC Purchases */}
+            {/* MSTR common equity issuance — confirmed (violet) */}
+            <Bar
+              yAxisId="atm"
+              stackId="mstr"
+              dataKey="mstr_issuance_confirmed"
+              fill={colors.violet}
+              opacity={0.9}
+              radius={[3, 3, 0, 0]}
+            />
+            {/* MSTR common equity issuance — estimated (light violet) */}
+            <Bar
+              yAxisId="atm"
+              stackId="mstr"
+              dataKey="mstr_issuance_estimated"
+              fill={colors.violetL}
+              opacity={0.7}
+              radius={[3, 3, 0, 0]}
+            />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
 
       {/* Footnote */}
       <div style={{ fontSize: 10, color: "var(--t3)", lineHeight: 1.5, marginBottom: 16 }}>
-        * Confirmed daily issuance (green) is allocated from 8-K period totals using a volume-weighted average —
-        each trading day receives a share proportional to its STRC volume relative to the period total.
-        Estimated daily issuance (amber) uses the flywheel participation rate applied to actual daily STRC trading volume.
+        * Confirmed bars (green/violet) show exact weekly 8-K filing totals. STRC preferred (green) and MSTR common equity (violet)
+        are clustered side-by-side per week. Estimated bars (amber/light violet) aggregate daily flywheel estimates into weekly totals.
       </div>
 
       {/* Event Log + Flywheel Summary */}
@@ -393,8 +481,8 @@ export default function VolumeATMTracker() {
 
             <p style={{ marginBottom: 10 }}>
               <strong style={{ color: "var(--t2)" }}>Confirmed events</strong> (<Badge variant="green">8-K</Badge>): From SEC EDGAR 8-K filings.
-              Confirmed totals are allocated proportionally to daily STRC trading volume (volume-weighted), not evenly spread.
-              Higher-volume days get a larger share of the confirmed issuance.
+              Confirmed period totals are shown as a single bar on the last trading day of each 8-K period,
+              preserving exact filing data without daily allocation.
             </p>
 
             <p style={{ marginBottom: 10 }}>

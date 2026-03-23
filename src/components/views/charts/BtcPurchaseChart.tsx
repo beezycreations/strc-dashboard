@@ -50,7 +50,7 @@ interface ChartPoint {
 export default function BtcPurchaseChart() {
   const { data: snap, isLoading: snapLoading } = useSnapshot();
   const { data: volumeAtm, isLoading: volumeLoading } = useVolumeAtm();
-  const [range, setRange] = useState<"3m" | "6m" | "1y" | "all">("3m");
+  const [range, setRange] = useState<"3m" | "6m" | "1y" | "all">("all");
   const [showMethodology, setShowMethodology] = useState(false);
 
   const btcPrice = snap?.btc_price ?? 83000;
@@ -65,7 +65,7 @@ export default function BtcPurchaseChart() {
           ? new Date(now.getFullYear(), now.getMonth() - 6, now.getDate())
           : range === "1y"
             ? new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())
-            : new Date("2020-08-01");
+            : new Date("2025-11-01");
     const cutoffStr = cutoff.toISOString().slice(0, 10);
 
     const result: ChartPoint[] = [];
@@ -131,7 +131,47 @@ export default function BtcPurchaseChart() {
     return result;
   }, [range, btcPrice, flywheelDays]);
 
-  const tickInterval = Math.max(1, Math.floor(chartData.length / 12));
+  // Aggregate daily data into weekly buckets (week-ending Saturday)
+  const weeklyChartData = useMemo(() => {
+    if (chartData.length === 0) return [];
+
+    const weekMap = new Map<string, {
+      week: string;
+      btc_confirmed: number;
+      btc_estimated: number;
+      btc_cumulative: number;
+      cost_m: number;
+    }>();
+
+    for (const d of chartData) {
+      const dt = new Date(d.date + "T12:00:00Z");
+      const dayOfWeek = dt.getUTCDay();
+      const daysToSat = (6 - dayOfWeek + 7) % 7;
+      const sat = new Date(dt);
+      sat.setUTCDate(sat.getUTCDate() + daysToSat);
+      const weekKey = sat.toISOString().slice(0, 10);
+
+      if (!weekMap.has(weekKey)) {
+        weekMap.set(weekKey, {
+          week: weekKey,
+          btc_confirmed: 0,
+          btc_estimated: 0,
+          btc_cumulative: 0,
+          cost_m: 0,
+        });
+      }
+      const w = weekMap.get(weekKey)!;
+      w.btc_confirmed += d.btc_confirmed;
+      w.btc_estimated += d.btc_estimated;
+      w.cost_m += d.cost_m;
+      // Use the latest cumulative value in the week
+      if (d.btc_cumulative > w.btc_cumulative) {
+        w.btc_cumulative = d.btc_cumulative;
+      }
+    }
+
+    return Array.from(weekMap.values()).sort((a, b) => a.week.localeCompare(b.week));
+  }, [chartData]);
 
   // Summary stats
   const totalBtcInRange = chartData.reduce((s, d) => s + d.btc_confirmed + d.btc_estimated, 0);
@@ -218,18 +258,15 @@ export default function BtcPurchaseChart() {
       {/* Chart */}
       <div style={{ height: 300, marginBottom: 16 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData} margin={{ top: 5, right: 10, bottom: 5, left: 5 }}>
+          <ComposedChart data={weeklyChartData} margin={{ top: 5, right: 10, bottom: 5, left: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={rechartsDefaults.gridStroke} />
             <XAxis
-              dataKey="date"
+              dataKey="week"
               tick={{ fontSize: 10, fill: colors.t3, fontFamily: rechartsDefaults.fontFamily }}
               tickFormatter={(v: string) => {
                 const d = new Date(v + "T00:00:00");
-                return range === "all" || range === "1y"
-                  ? d.toLocaleDateString("en-US", { month: "short", year: "2-digit" })
-                  : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
               }}
-              interval={tickInterval}
             />
             <YAxis
               yAxisId="daily"
@@ -248,7 +285,7 @@ export default function BtcPurchaseChart() {
               contentStyle={rechartsDefaults.tooltipStyle}
               labelFormatter={(label: unknown) => {
                 const d = new Date(String(label) + "T00:00:00");
-                return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+                return `Week ending ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
               }}
               formatter={(value: unknown, name: unknown) => {
                 const v = Number(value);

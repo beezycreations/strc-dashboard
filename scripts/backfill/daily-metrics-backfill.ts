@@ -284,12 +284,14 @@ async function run() {
     const ev = getEvComponents(dateStr);
 
     // mNAV = EV / BTC Reserve
+    const totalEv = mstrMarketCap + ev.convertDebt + ev.prefNotional - ev.cash;
     let mnav: number | null = null;
     if (btcNavUsd > 0 && mstrMarketCap > 0) {
-      const totalEv = mstrMarketCap + ev.convertDebt + ev.prefNotional - ev.cash;
       mnav = parseFloat((totalEv / btcNavUsd).toFixed(4));
     }
     const mnavRegime = mnav != null ? mnavRegimeFromValue(mnav) : null;
+    const evBillions = totalEv > 0 ? totalEv / 1e9 : null;
+    const btcReserveBillions = btcNavUsd > 0 ? btcNavUsd / 1e9 : null;
 
     // BTC coverage ratio
     const strcDeployed = strcAtmDeployedOnDate(dateStr);
@@ -503,6 +505,11 @@ async function run() {
       strcTradingVolumeUsd: toStr(strcTradingVolumeUsd),
       btcYieldYtd: toStr(btcYieldYtd),
       btcDollarGainYtd: toStr(btcDollarGainYtd),
+      mstrPrice: toStr(mstrPrice > 0 ? mstrPrice : null),
+      btcPrice: toStr(btcPrice > 0 ? btcPrice : null),
+      cumBtc: toStr(btcCount > 0 ? btcCount : null),
+      evBillions: toStr(evBillions),
+      btcReserveBillions: toStr(btcReserveBillions),
     };
 
     try {
