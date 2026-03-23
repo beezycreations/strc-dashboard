@@ -84,15 +84,15 @@ export default function PredictView() {
       </div>
 
       {/* Filters */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         {/* Platform filter */}
-        <div style={{ display: "flex", gap: 2 }}>
+        <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
           {(["all", "polymarket", "kalshi"] as Platform[]).map((p) => (
             <button
               key={p}
               onClick={() => setPlatform(p)}
               style={{
-                padding: "6px 14px",
+                padding: "5px 10px",
                 borderRadius: "var(--r-sm)",
                 border: "1px solid var(--border)",
                 background: platform === p ? "var(--t1)" : "var(--bg)",
@@ -104,19 +104,19 @@ export default function PredictView() {
                 textTransform: "capitalize",
               }}
             >
-              {p === "all" ? "All Platforms" : p.charAt(0).toUpperCase() + p.slice(1)}
+              {p === "all" ? "All" : p.charAt(0).toUpperCase() + p.slice(1)}
             </button>
           ))}
         </div>
 
         {/* Category filter */}
-        <div style={{ display: "flex", gap: 2 }}>
+        <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
           {(["all", "btc", "mstr", "strc", "strive"] as Category[]).map((c) => (
             <button
               key={c}
               onClick={() => setCategory(c)}
               style={{
-                padding: "6px 14px",
+                padding: "5px 10px",
                 borderRadius: "var(--r-sm)",
                 border: "1px solid var(--border)",
                 background: category === c ? "var(--t1)" : "var(--bg)",
@@ -220,12 +220,12 @@ function MarketRow({ market }: { market: PredictMarket }) {
         </div>
 
         {/* Meta row */}
-        <div style={{ display: "flex", gap: 16, fontSize: "var(--text-sm)", color: "var(--t3)" }}>
+        <div style={{ display: "flex", gap: 8, fontSize: "var(--text-sm)", color: "var(--t3)", flexWrap: "wrap" }}>
           <span className="mono">Vol: {fmtVol(market.volume)}</span>
           {market.volume_24h !== null && (
             <span className="mono">24h: {fmtVol(market.volume_24h)}</span>
           )}
-          <span>Expires: {fmtDate(market.end_date)}</span>
+          <span>Exp: {fmtDate(market.end_date)}</span>
         </div>
       </div>
 

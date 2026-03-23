@@ -15,9 +15,9 @@ export default function StatRow({ cells }: StatRowProps) {
   return (
     <div style={{ display: "flex", gap: "var(--card-gap)", flexWrap: "wrap" }}>
       {cells.map((cell, i) => (
-        <div key={i} style={{ flex: "1 1 0", minWidth: 100 }}>
+        <div key={i} style={{ flex: "1 1 0", minWidth: 80 }}>
           <div style={{ fontSize: "var(--text-xs)", color: "var(--t3)", marginBottom: 2 }}>{cell.label}</div>
-          <div className={cell.mono !== false ? "mono" : ""} style={{ fontSize: "var(--text-md)", fontWeight: 600, color: cell.color || "var(--t1)" }}>{cell.value}</div>
+          <div className={cell.mono !== false ? "mono" : ""} style={{ fontSize: "var(--text-md)", fontWeight: 600, color: cell.color || "var(--t1)", overflow: "hidden", textOverflow: "ellipsis" }}>{cell.value}</div>
         </div>
       ))}
     </div>

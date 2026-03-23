@@ -74,7 +74,7 @@ export default function SataMarketSummarySection({ snap, history }: Props) {
       </div>
 
       {/* Price chart | Capital Stack */}
-      <div className="grid-7-5" style={{ minHeight: 380, marginBottom: 20 }}>
+      <div className="grid-7-5" style={{ marginBottom: 20 }}>
         <div className="card" style={{ display: "flex", flexDirection: "column" }}>
           <div style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: 12 }}>SATA Price History</div>
           <div style={{ flex: 1, minHeight: 0, height: 280 }}>
