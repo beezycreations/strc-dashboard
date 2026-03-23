@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { desc } from "drizzle-orm";
 import { fetchFmpHistory } from "@/src/lib/utils/fetchers";
-import { CONFIRMED_PURCHASES } from "@/src/lib/data/confirmed-purchases";
+import { CONFIRMED_PURCHASES, LATEST_CONFIRMED_DATE } from "@/src/lib/data/confirmed-purchases";
 import { getAdso } from "@/src/lib/data/mstr-adso";
 import { getEvComponents, type EvComponents } from "@/src/lib/data/capital-structure";
 
@@ -9,11 +10,45 @@ export const revalidate = 0;
 const FIRST_PURCHASE_DATE = "2020-08-10";
 
 /**
- * Get cumulative BTC held as of a given date (step function from confirmed purchases).
+ * Merge static confirmed purchases with any newer DB entries.
+ * Returns a step-function lookup: date → cumulative BTC.
  */
-function getCumulativeBtc(dateStr: string): number {
+async function buildCumulativeBtcLookup(): Promise<Array<{ date: string; cumulative: number }>> {
+  // Start with static data
+  const entries = CONFIRMED_PURCHASES.map((p) => ({ date: p.date, cumulative: p.cumulative }));
+
+  // Try to extend with DB entries newer than static data
+  try {
+    if (!process.env.DATABASE_URL) return entries;
+    const { db } = await import("@/src/db/client");
+    const { btcHoldings } = await import("@/src/db/schema");
+
+    const dbRows = await db
+      .select({ reportDate: btcHoldings.reportDate, btcCount: btcHoldings.btcCount })
+      .from(btcHoldings)
+      .orderBy(desc(btcHoldings.reportDate))
+      .limit(20);
+
+    for (const row of dbRows) {
+      if (row.reportDate > LATEST_CONFIRMED_DATE) {
+        entries.push({ date: row.reportDate, cumulative: row.btcCount });
+      }
+    }
+
+    entries.sort((a, b) => a.date.localeCompare(b.date));
+  } catch {
+    // Fall through with static data only
+  }
+
+  return entries;
+}
+
+/**
+ * Get cumulative BTC held as of a given date (step function).
+ */
+function getCumulativeBtc(dateStr: string, lookup: Array<{ date: string; cumulative: number }>): number {
   let cum = 0;
-  for (const p of CONFIRMED_PURCHASES) {
+  for (const p of lookup) {
     if (p.date <= dateStr) cum = p.cumulative;
     else break;
   }
@@ -59,9 +94,10 @@ async function buildLiveMnav(): Promise<MnavDataPoint[] | null> {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  const [mstrPrices, btcPrices] = await Promise.all([
+  const [mstrPrices, btcPrices, btcLookup] = await Promise.all([
     fetchFmpHistory("MSTR", FIRST_PURCHASE_DATE, today),
     fetchFmpHistory("BTCUSD", FIRST_PURCHASE_DATE, today),
+    buildCumulativeBtcLookup(),
   ]);
 
   if (!mstrPrices?.length || !btcPrices?.length) return null;
@@ -83,7 +119,7 @@ async function buildLiveMnav(): Promise<MnavDataPoint[] | null> {
     const btcPrice = btcByDate.get(date);
     if (!btcPrice || btcPrice <= 0) continue;
 
-    const cumBtc = getCumulativeBtc(date);
+    const cumBtc = getCumulativeBtc(date, btcLookup);
     if (cumBtc <= 0) continue;
 
     const adsoThousands = getAdso(date);

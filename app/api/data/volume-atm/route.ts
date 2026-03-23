@@ -4,8 +4,73 @@ import { MSTR_SHARES_AT_FILING } from "@/src/lib/data/capital-structure";
 import { calibrateParticipationRate, getConfirmedPeriodMetrics, allocateByVolume } from "@/src/lib/calculators/issuance-engine";
 import { runForecast, type DayMarketData } from "@/src/lib/calculators/flywheel-forecast";
 import { CONFIRMED_STRC_ATM, TOTAL_STRC_SHARES, TOTAL_STRC_PROCEEDS } from "@/src/lib/data/confirmed-strc-atm";
-import { CONFIRMED_PURCHASES } from "@/src/lib/data/confirmed-purchases";
+import { CONFIRMED_PURCHASES, LATEST_CONFIRMED_DATE } from "@/src/lib/data/confirmed-purchases";
 import { LATEST_ATM_PERIOD_END } from "@/src/lib/data/confirmed-atm-all";
+
+/**
+ * Derive the latest confirmed period end from DB if newer than static data.
+ * This allows new 8-K filings (ingested by edgar-check cron) to automatically
+ * shift the confirmed/estimated boundary without manual static file updates.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getLatestConfirmedBoundary(db: any): Promise<string> {
+  try {
+    const { strcFilings } = await import("@/src/db/schema");
+    const [latest] = await db
+      .select({ periodEnd: strcFilings.periodEnd })
+      .from(strcFilings)
+      .orderBy(desc(strcFilings.periodEnd))
+      .limit(1);
+
+    if (latest?.periodEnd && latest.periodEnd > LATEST_ATM_PERIOD_END) {
+      return latest.periodEnd;
+    }
+  } catch {
+    // Fall through to static
+  }
+  return LATEST_ATM_PERIOD_END;
+}
+
+/**
+ * Get confirmed BTC purchases from DB that are newer than static data.
+ * Converts cumulative btcCount into per-period delta (btc purchased).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getDbPurchases(db: any): Promise<Array<{ date: string; btc: number; cost_m: number; cumulative: number }>> {
+  try {
+    const { btcHoldings } = await import("@/src/db/schema");
+    const rows = await db
+      .select()
+      .from(btcHoldings)
+      .where(gte(btcHoldings.reportDate, LATEST_CONFIRMED_DATE))
+      .orderBy(btcHoldings.reportDate);
+
+    // Last known cumulative from static data
+    const lastStaticCum = CONFIRMED_PURCHASES[CONFIRMED_PURCHASES.length - 1]?.cumulative ?? 0;
+
+    const result: Array<{ date: string; btc: number; cost_m: number; cumulative: number }> = [];
+    let prevCum = lastStaticCum;
+
+    for (const r of rows) {
+      if (r.reportDate <= LATEST_CONFIRMED_DATE) continue;
+      const cum = r.btcCount;
+      const delta = cum - prevCum;
+      if (delta > 0) {
+        result.push({
+          date: r.reportDate,
+          btc: delta,
+          cost_m: r.totalCostUsd ? Math.round(parseFloat(r.totalCostUsd) / 1e6) : 0,
+          cumulative: cum,
+        });
+      }
+      prevCum = cum;
+    }
+
+    return result;
+  } catch {
+    return [];
+  }
+}
 
 export const revalidate = 0;
 
@@ -91,6 +156,11 @@ export async function GET() {
       return NextResponse.json(EMPTY_RESPONSE("unavailable"));
     }
 
+    // Resolve confirmed/estimated boundary — prefer DB if newer than static
+    const latestPeriodEnd = await getLatestConfirmedBoundary(db);
+    // Merge any DB-only purchases newer than static data
+    const dbPurchases = await getDbPurchases(db);
+
     // Build volume history grouped by date
     const volByDate = new Map<string, { strc_volume: number; strc_price: number; mstr_volume: number }>();
     for (const row of volumeRows) {
@@ -168,9 +238,13 @@ export async function GET() {
 
     // Build confirmed period ranges from CONFIRMED_PURCHASES (post-IPO only)
     // 8-K filing date is typically 1 day after period end, so include purchases
-    // filed up through the day after LATEST_ATM_PERIOD_END.
-    const lastConfirmedCutoff = nextDay(LATEST_ATM_PERIOD_END);
-    const postIpoPurchases = CONFIRMED_PURCHASES.filter(
+    // filed up through the day after the confirmed boundary.
+    const lastConfirmedCutoff = nextDay(latestPeriodEnd);
+    const allPurchases = [
+      ...CONFIRMED_PURCHASES,
+      ...dbPurchases.filter((dp) => !CONFIRMED_PURCHASES.some((cp) => cp.date === dp.date)),
+    ].sort((a, b) => a.date.localeCompare(b.date));
+    const postIpoPurchases = allPurchases.filter(
       (p) => p.date >= STRC_IPO_DATE && p.date <= lastConfirmedCutoff,
     );
 
@@ -183,9 +257,9 @@ export async function GET() {
       const periodStart = i > 0
         ? nextDay(prevDate)
         : STRC_IPO_DATE;
-      // Cap period end at LATEST_ATM_PERIOD_END (filing date may be after period end)
-      const periodEnd = purchase.date > LATEST_ATM_PERIOD_END
-        ? LATEST_ATM_PERIOD_END
+      // Cap period end at confirmed boundary (filing date may be after period end)
+      const periodEnd = purchase.date > latestPeriodEnd
+        ? latestPeriodEnd
         : purchase.date;
 
       // Get trading days with volume in this period
@@ -227,7 +301,7 @@ export async function GET() {
 
     // Phase 2: Flywheel ONLY on days AFTER the last confirmed 8-K period end
     const estimatedDays = volumeHistory.filter(
-      (v) => !confirmedDaySet.has(v.date) && v.date > LATEST_ATM_PERIOD_END,
+      (v) => !confirmedDaySet.has(v.date) && v.date > latestPeriodEnd,
     );
     const flywheelMarketData: DayMarketData[] = estimatedDays.map((v) => ({
       date: v.date,

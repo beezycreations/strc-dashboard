@@ -1,7 +1,7 @@
 /**
  * Complete confirmed BTC purchase history from Strategy 8-K filings.
  * Source: strategy.com/purchases
- * Last updated: 2026-03-16 (Purchase #103)
+ * Last updated: 2026-03-23 (Purchase #104)
  */
 
 export interface ConfirmedPurchase {
@@ -113,6 +113,7 @@ export const CONFIRMED_PURCHASES: ConfirmedPurchase[] = [
   { date: "2026-03-02", btc: 3015, avg_cost: 67700, cost_m: 204, cumulative: 720737 },
   { date: "2026-03-09", btc: 17994, avg_cost: 70946, cost_m: 1277, cumulative: 738731 },
   { date: "2026-03-16", btc: 22337, avg_cost: 70290, cost_m: 1570, cumulative: 761068 },
+  { date: "2026-03-23", btc: 1031, avg_cost: 74326, cost_m: 77, cumulative: 762099 },
 ];
 
 export const LATEST_CONFIRMED_BTC = CONFIRMED_PURCHASES[CONFIRMED_PURCHASES.length - 1].cumulative;

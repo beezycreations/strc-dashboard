@@ -1,7 +1,7 @@
 /**
  * Confirmed ATM issuance across ALL instruments from SEC 8-K filings.
  * Source: SEC EDGAR — Strategy Inc Form 8-K
- * Last updated: 2026-03-16 (8-K filed March 16, 2026)
+ * Last updated: 2026-03-23 (8-K filed March 23, 2026)
  *
  * Each entry represents one weekly 8-K filing period.
  * This is the ground truth for backtesting volume-based ATM estimation
@@ -45,7 +45,7 @@ export const ATM_REMAINING = {
   STRC: 1_975_800_000,
   STRK: 20_331_600_000,
   STRD: 4_014_800_000,
-  MSTR: 6_316_800_000,
+  MSTR: 6_240_200_000,
 } as const;
 
 export const ATM_AUTHORIZED = {
@@ -65,7 +65,24 @@ export const ATM_AUTHORIZED = {
  * MSTR common issuance is reported separately in the same 8-K.
  */
 export const CONFIRMED_ATM_PERIODS: ConfirmedAtmPeriod[] = [
-  // ── 2026-03-16 (today's 8-K) ──
+  // ── 2026-03-23 ──
+  {
+    filed: "2026-03-23",
+    period_start: "2026-03-16",
+    period_end: "2026-03-22",
+    instruments: [
+      { ticker: "STRF", shares_sold: 0, net_proceeds: 0 },
+      { ticker: "STRC", shares_sold: 0, net_proceeds: 0 },
+      { ticker: "STRK", shares_sold: 0, net_proceeds: 0 },
+      { ticker: "STRD", shares_sold: 0, net_proceeds: 0 },
+      { ticker: "MSTR", shares_sold: 509_111, net_proceeds: 76_500_000 },
+    ],
+    btc_purchased: 1_031,
+    avg_btc_price: 74_326,
+    btc_cost: 76_600_000,
+    cumulative_btc: 762_099,
+  },
+  // ── 2026-03-16 ──
   {
     filed: "2026-03-16",
     period_start: "2026-03-09",
