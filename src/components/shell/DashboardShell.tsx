@@ -4,7 +4,7 @@ import { useState, useCallback } from "react";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 
-export type View = "strc" | "sata" | "positions";
+export type View = "strc" | "sata" | "positions" | "predict";
 
 interface DashboardShellProps {
   children: (activeView: View) => React.ReactNode;

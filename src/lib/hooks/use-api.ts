@@ -76,3 +76,12 @@ export function useSataFilings() {
     revalidateOnFocus: false,
   });
 }
+
+// ── Predict Hooks ────────────────────────────────────────────────────
+
+export function usePredictMarkets() {
+  return useSWR("/api/data/predict", fetcher, {
+    refreshInterval: 60_000,
+    revalidateOnFocus: true,
+  });
+}
